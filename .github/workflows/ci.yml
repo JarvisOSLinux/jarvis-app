@@ -42,7 +42,6 @@ jobs:
         with:
           version: '6.8.3'
           target: 'desktop'
-          modules: 'qtdeclarative'
           tools: 'tools_cmake'
           cache: true
 
