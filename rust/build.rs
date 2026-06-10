@@ -1,14 +1,20 @@
 use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
 fn main() {
-    CxxQtBuilder::new_qml_module(
-        QmlModule::new("JarvisUI")
-            .qml_file("qml/Main.qml")
-            .qml_file("qml/ChatView.qml")
-            .qml_file("qml/MessageBubble.qml")
-            .qml_file("qml/InputBar.qml")
-            .qml_file("qml/StatusIndicator.qml"),
-    )
-    .files(["src/bridge.rs"])
-    .build();
+    CxxQtBuilder::new()
+        .file("src/bridge.rs")
+        .qml_module(QmlModule::<&str, &str> {
+            uri: "JarvisUI",
+            version_major: 1,
+            version_minor: 0,
+            qml_files: &[
+                "qml/Main.qml",
+                "qml/ChatView.qml",
+                "qml/MessageBubble.qml",
+                "qml/InputBar.qml",
+                "qml/StatusIndicator.qml",
+            ],
+            ..Default::default()
+        })
+        .build();
 }
