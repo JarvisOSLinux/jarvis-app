@@ -1,7 +1,7 @@
 mod bridge;
 mod ipc;
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl, QString};
+use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
 fn main() {
     let mut app = QGuiApplication::new();
@@ -10,7 +10,9 @@ fn main() {
     app.set_application_version(QString::from(env!("CARGO_PKG_VERSION")));
 
     let mut engine = QQmlApplicationEngine::default();
-    engine.load(QUrl::from(QString::from("qrc:/qt/qml/JarvisUI/qml/Main.qml")));
+    engine.load(QUrl::from(QString::from(
+        "qrc:/qt/qml/JarvisUI/qml/Main.qml",
+    )));
 
     if engine.root_objects().is_empty() {
         eprintln!("jarvis-ui: failed to load Main.qml");

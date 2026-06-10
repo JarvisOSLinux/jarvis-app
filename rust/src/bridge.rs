@@ -10,9 +10,9 @@
 //!
 //! A QTimer in Main.qml calls bridge.pollIpc() every 50 ms.
 
-use std::pin::Pin;
-use cxx_qt_lib::QString;
 use crate::ipc::{IpcClient, IpcEvent};
+use cxx_qt_lib::QString;
+use std::pin::Pin;
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -54,20 +54,20 @@ pub mod ffi {
 }
 
 pub struct JarvisBridgeRust {
-    jarvis_state:    QString,
-    connected:       bool,
-    is_listening:    bool,
-    ipc:             IpcClient,
+    jarvis_state: QString,
+    connected: bool,
+    is_listening: bool,
+    ipc: IpcClient,
     response_buffer: String,
 }
 
 impl Default for JarvisBridgeRust {
     fn default() -> Self {
         Self {
-            jarvis_state:    QString::from("offline"),
-            connected:       false,
-            is_listening:    false,
-            ipc:             IpcClient::new(),
+            jarvis_state: QString::from("offline"),
+            connected: false,
+            is_listening: false,
+            ipc: IpcClient::new(),
             response_buffer: String::new(),
         }
     }
@@ -76,7 +76,9 @@ impl Default for JarvisBridgeRust {
 impl ffi::JarvisBridge {
     fn send_message(self: Pin<&mut Self>, content: QString) {
         let text = content.to_string();
-        if text.trim().is_empty() { return; }
+        if text.trim().is_empty() {
+            return;
+        }
         self.as_mut().user_message_added(content);
         self.rust().ipc.send_message(text);
     }
@@ -99,14 +101,18 @@ impl ffi::JarvisBridge {
                     self.as_mut().set_jarvis_state(QString::from(&*state));
                 }
                 IpcEvent::ResponseChunk { content, done } => {
-                    unsafe { self.as_mut().rust_mut() }.response_buffer.push_str(&content);
+                    unsafe { self.as_mut().rust_mut() }
+                        .response_buffer
+                        .push_str(&content);
                     if done {
                         let full = unsafe { &self.rust_unchecked().response_buffer }.clone();
                         unsafe { self.as_mut().rust_mut() }.response_buffer.clear();
-                        self.as_mut().jarvis_stream_chunk(QString::from(&*full), true);
+                        self.as_mut()
+                            .jarvis_stream_chunk(QString::from(&*full), true);
                         self.as_mut().set_jarvis_state(QString::from("idle"));
                     } else {
-                        self.as_mut().jarvis_stream_chunk(QString::from(&*content), false);
+                        self.as_mut()
+                            .jarvis_stream_chunk(QString::from(&*content), false);
                     }
                 }
                 IpcEvent::WakeWordDetected => {
