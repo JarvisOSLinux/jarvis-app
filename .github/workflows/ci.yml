@@ -42,7 +42,20 @@ jobs:
         with:
           version: '6.8.3'
           target: 'desktop'
+          modules: 'qtdeclarative'
+          tools: 'tools_cmake'
           cache: true
+
+      - name: Verify Qt6 tools
+        run: |
+          echo "=== Qt env ==="
+          echo "Qt6_DIR=${Qt6_DIR:-unset}"
+          echo "QT_ROOT_DIR=${QT_ROOT_DIR:-unset}"
+          echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH:-unset}"
+          echo "=== qmltyperegistrar lookup ==="
+          find "${QT_ROOT_DIR:-/home/runner/work/jarvisos-app/Qt}" -name 'qmltyperegistrar' -type f 2>/dev/null || echo "NOT FOUND"
+          echo "=== Qt libexec contents ==="
+          ls -la "${QT_ROOT_DIR:-/home/runner/work/jarvisos-app/Qt/6.8.3/gcc_64}"/libexec/ 2>/dev/null || echo "no libexec dir"
 
       - uses: Swatinem/rust-cache@v2
         with:
