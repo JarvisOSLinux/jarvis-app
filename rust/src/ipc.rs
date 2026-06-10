@@ -49,7 +49,10 @@ impl IpcClient {
             .spawn(move || ipc_thread(event_tx, command_rx))
             .expect("failed to spawn IPC thread");
 
-        Self { event_rx, command_tx }
+        Self {
+            event_rx,
+            command_tx,
+        }
     }
 
     pub fn try_recv(&self) -> Option<IpcEvent> {
@@ -74,7 +77,9 @@ impl IpcClient {
 }
 
 impl Default for IpcClient {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn ipc_thread(event_tx: Sender<IpcEvent>, command_rx: Receiver<IpcCommand>) {
@@ -104,7 +109,10 @@ fn run_connected(
 ) {
     let read_stream = match stream.try_clone() {
         Ok(s) => s,
-        Err(e) => { eprintln!("jarvis-ipc: clone failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("jarvis-ipc: clone failed: {e}");
+            return;
+        }
     };
 
     let (read_tx, read_rx) = mpsc::channel::<Option<IpcEvent>>();
@@ -115,10 +123,15 @@ fn run_connected(
             for line in reader.lines() {
                 match line {
                     Ok(l) if !l.is_empty() => {
-                        if read_tx.send(Some(parse_daemon_message(&l))).is_err() { break; }
+                        if read_tx.send(Some(parse_daemon_message(&l))).is_err() {
+                            break;
+                        }
                     }
                     Ok(_) => {}
-                    Err(_) => { let _ = read_tx.send(None); break; }
+                    Err(_) => {
+                        let _ = read_tx.send(None);
+                        break;
+                    }
                 }
             }
         })
@@ -126,13 +139,20 @@ fn run_connected(
 
     let mut write_stream = match stream.try_clone() {
         Ok(s) => s,
-        Err(e) => { eprintln!("jarvis-ipc: write clone failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("jarvis-ipc: write clone failed: {e}");
+            return;
+        }
     };
 
     loop {
         loop {
             match read_rx.try_recv() {
-                Ok(Some(event)) => { if event_tx.send(event).is_err() { return; } }
+                Ok(Some(event)) => {
+                    if event_tx.send(event).is_err() {
+                        return;
+                    }
+                }
                 Ok(None) => return,
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return,
@@ -141,12 +161,19 @@ fn run_connected(
 
         match command_rx.recv_timeout(COMMAND_POLL) {
             Ok(IpcCommand::SendMessage(content)) => {
-                let msg = format!("{}\n", serde_json::json!({"type":"message","content":content}));
-                if write_stream.write_all(msg.as_bytes()).is_err() { return; }
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"message","content":content})
+                );
+                if write_stream.write_all(msg.as_bytes()).is_err() {
+                    return;
+                }
             }
             Ok(IpcCommand::StartListening) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"start_listening"}));
-                if write_stream.write_all(msg.as_bytes()).is_err() { return; }
+                if write_stream.write_all(msg.as_bytes()).is_err() {
+                    return;
+                }
             }
             Ok(IpcCommand::StopListening) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"stop_listening"}));
@@ -166,15 +193,27 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
 
     match value.get("type").and_then(|t| t.as_str()) {
         Some("state") => IpcEvent::State(
-            value.get("state").and_then(|s| s.as_str()).unwrap_or("idle").to_string()
+            value
+                .get("state")
+                .and_then(|s| s.as_str())
+                .unwrap_or("idle")
+                .to_string(),
         ),
         Some("response") => IpcEvent::ResponseChunk {
-            content: value.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string(),
-            done:    value.get("done").and_then(|d| d.as_bool()).unwrap_or(true),
+            content: value
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string(),
+            done: value.get("done").and_then(|d| d.as_bool()).unwrap_or(true),
         },
         Some("wake_word_detected") => IpcEvent::WakeWordDetected,
         Some("error") => IpcEvent::Error(
-            value.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error").to_string()
+            value
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error")
+                .to_string(),
         ),
         Some("ping") | Some("pong") => IpcEvent::State("idle".into()),
         other => IpcEvent::Error(format!("unknown type: {other:?}")),

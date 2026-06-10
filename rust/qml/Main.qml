@@ -12,10 +12,10 @@ ApplicationWindow {
     minimumHeight: 540
     visible: true
     title: "JARVIS"
-    color: JarvisTheme.bg
+    color: jarvisTheme.bg
 
     QtObject {
-        id: JarvisTheme
+        id: jarvisTheme
         readonly property color bg:           "#0a0e1a"
         readonly property color surface:      "#0f1520"
         readonly property color card:         "#141c2e"
@@ -60,12 +60,12 @@ ApplicationWindow {
         Rectangle {
             Layout.fillWidth: true
             height: 64
-            color: JarvisTheme.surface
+            color: jarvisTheme.surface
 
             Rectangle {
                 anchors.bottom: parent.bottom
                 width: parent.width; height: 1
-                color: JarvisTheme.border
+                color: jarvisTheme.border
             }
 
             RowLayout {
@@ -78,12 +78,12 @@ ApplicationWindow {
                     Text {
                         text: "JARVIS"
                         font.pixelSize: 20; font.letterSpacing: 4; font.weight: Font.Bold
-                        color: JarvisTheme.primary
+                        color: jarvisTheme.primary
                     }
                     Text {
                         text: "AI Operating System"
                         font.pixelSize: 10; font.letterSpacing: 1
-                        color: JarvisTheme.textSecondary
+                        color: jarvisTheme.textSecondary
                     }
                 }
 
@@ -100,18 +100,18 @@ ApplicationWindow {
             id: chatView
             Layout.fillWidth: true
             Layout.fillHeight: true
-            theme: JarvisTheme
+            theme: jarvisTheme
         }
 
         Rectangle {
             Layout.fillWidth: true; height: 1
-            color: JarvisTheme.border
+            color: jarvisTheme.border
         }
 
         InputBar {
             id: inputBar
             Layout.fillWidth: true
-            theme: JarvisTheme
+            theme: jarvisTheme
             isListening: bridge.isListening
             isConnected: bridge.connected
             onSendMessage: function(text) { bridge.sendMessage(text) }
