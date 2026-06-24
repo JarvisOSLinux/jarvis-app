@@ -1,20 +1,85 @@
 //! JARVIS IPC Client
 //!
-//! Runs a background thread that connects to /tmp/jarvis.sock.
+//! Runs a background thread that connects to the JARVIS daemon.
+//! Unix: connects via Unix domain socket.
+//! Windows: reads a `.port` file and connects via TCP to 127.0.0.1.
 //! Auto-reconnects every 2s on disconnect.
 //!
 //! IPC thread  -> Qt thread : event_rx  (mpsc Receiver<IpcEvent>)
 //! Qt thread   -> IPC thread: command_tx (mpsc Sender<IpcCommand>)
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-pub const SOCKET_PATH: &str = "/tmp/jarvis.sock";
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+type IpcStream = UnixStream;
+
+#[cfg(windows)]
+use std::net::TcpStream;
+#[cfg(windows)]
+type IpcStream = TcpStream;
+
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const COMMAND_POLL: Duration = Duration::from_millis(50);
+
+fn default_socket_path() -> String {
+    let dir = jarvis_data_dir();
+    format!("{}{}{}", dir, std::path::MAIN_SEPARATOR, "jarvis.sock")
+}
+
+/// Mirrors Project-JARVIS's per-platform data_dir() so sockets land in the
+/// same directory the daemon uses.
+pub fn jarvis_data_dir() -> String {
+    if let Ok(d) = std::env::var("JARVIS_DATA_DIR") {
+        return d;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            format!("{}/.local/share", home)
+        });
+        format!("{}/jarvis", base)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        format!("{}/Library/Application Support/jarvis", home)
+    }
+    #[cfg(windows)]
+    {
+        let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
+            let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".into());
+            format!("{}\\AppData\\Local", home)
+        });
+        format!("{}\\jarvis", base)
+    }
+}
+
+fn socket_path() -> String {
+    std::env::var("JARVIS_SOCKET").unwrap_or_else(|_| default_socket_path())
+}
+
+#[cfg(unix)]
+fn connect_to_daemon() -> std::io::Result<IpcStream> {
+    IpcStream::connect(socket_path())
+}
+
+#[cfg(windows)]
+fn connect_to_daemon() -> std::io::Result<IpcStream> {
+    let path = socket_path();
+    let port_file = format!("{}.port", path);
+    let port: u16 = std::fs::read_to_string(&port_file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?
+        .trim()
+        .parse()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    IpcStream::connect(("127.0.0.1", port))
+}
 
 #[derive(Debug, Clone)]
 pub enum IpcEvent {
@@ -84,7 +149,7 @@ impl Default for IpcClient {
 
 fn ipc_thread(event_tx: Sender<IpcEvent>, command_rx: Receiver<IpcCommand>) {
     loop {
-        match UnixStream::connect(SOCKET_PATH) {
+        match connect_to_daemon() {
             Ok(stream) => {
                 let _ = event_tx.send(IpcEvent::Connected);
                 run_connected(&stream, &event_tx, &command_rx);
@@ -103,7 +168,7 @@ fn ipc_thread(event_tx: Sender<IpcEvent>, command_rx: Receiver<IpcCommand>) {
 }
 
 fn run_connected(
-    stream: &UnixStream,
+    stream: &IpcStream,
     event_tx: &Sender<IpcEvent>,
     command_rx: &Receiver<IpcCommand>,
 ) {

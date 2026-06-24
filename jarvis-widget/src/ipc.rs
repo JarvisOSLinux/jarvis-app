@@ -1,19 +1,83 @@
 //! JARVIS IPC Client
 //!
-//! Runs a background thread that connects to /tmp/jarvis.sock.
+//! Runs a background thread that connects to the JARVIS daemon.
+//! Unix: connects via Unix domain socket.
+//! Windows: reads a `.port` file and connects via TCP to 127.0.0.1.
 //! Auto-reconnects every 2s on disconnect.
 //!
 //! Adapted from jarvis-ui with added StopStream command.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-pub const SOCKET_PATH: &str = "/tmp/jarvis.sock";
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+type IpcStream = UnixStream;
+
+#[cfg(windows)]
+use std::net::TcpStream;
+#[cfg(windows)]
+type IpcStream = TcpStream;
+
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const COMMAND_POLL: Duration = Duration::from_millis(50);
+
+fn default_socket_path() -> String {
+    let dir = jarvis_data_dir();
+    format!("{}{}{}", dir, std::path::MAIN_SEPARATOR, "jarvis.sock")
+}
+
+/// Mirrors Project-JARVIS's per-platform data_dir().
+pub fn jarvis_data_dir() -> String {
+    if let Ok(d) = std::env::var("JARVIS_DATA_DIR") {
+        return d;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            format!("{}/.local/share", home)
+        });
+        format!("{}/jarvis", base)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        format!("{}/Library/Application Support/jarvis", home)
+    }
+    #[cfg(windows)]
+    {
+        let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
+            let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".into());
+            format!("{}\\AppData\\Local", home)
+        });
+        format!("{}\\jarvis", base)
+    }
+}
+
+fn socket_path() -> String {
+    std::env::var("JARVIS_SOCKET").unwrap_or_else(|_| default_socket_path())
+}
+
+#[cfg(unix)]
+fn connect_to_daemon() -> std::io::Result<IpcStream> {
+    IpcStream::connect(socket_path())
+}
+
+#[cfg(windows)]
+fn connect_to_daemon() -> std::io::Result<IpcStream> {
+    let path = socket_path();
+    let port_file = format!("{}.port", path);
+    let port: u16 = std::fs::read_to_string(&port_file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?
+        .trim()
+        .parse()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    IpcStream::connect(("127.0.0.1", port))
+}
 
 #[derive(Debug, Clone)]
 pub enum IpcEvent {
@@ -49,7 +113,10 @@ impl IpcClient {
             .spawn(move || ipc_thread(event_tx, command_rx))
             .expect("failed to spawn IPC thread");
 
-        Self { event_rx, command_tx }
+        Self {
+            event_rx,
+            command_tx,
+        }
     }
 
     pub fn try_recv(&self) -> Option<IpcEvent> {
@@ -78,12 +145,14 @@ impl IpcClient {
 }
 
 impl Default for IpcClient {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn ipc_thread(event_tx: Sender<IpcEvent>, command_rx: Receiver<IpcCommand>) {
     loop {
-        match UnixStream::connect(SOCKET_PATH) {
+        match connect_to_daemon() {
             Ok(stream) => {
                 let _ = event_tx.send(IpcEvent::Connected);
                 run_connected(&stream, &event_tx, &command_rx);
@@ -102,13 +171,16 @@ fn ipc_thread(event_tx: Sender<IpcEvent>, command_rx: Receiver<IpcCommand>) {
 }
 
 fn run_connected(
-    stream: &UnixStream,
+    stream: &IpcStream,
     event_tx: &Sender<IpcEvent>,
     command_rx: &Receiver<IpcCommand>,
 ) {
     let read_stream = match stream.try_clone() {
         Ok(s) => s,
-        Err(e) => { eprintln!("jarvis-ipc: clone failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("jarvis-ipc: clone failed: {e}");
+            return;
+        }
     };
 
     let (read_tx, read_rx) = mpsc::channel::<Option<IpcEvent>>();
@@ -119,10 +191,15 @@ fn run_connected(
             for line in reader.lines() {
                 match line {
                     Ok(l) if !l.is_empty() => {
-                        if read_tx.send(Some(parse_daemon_message(&l))).is_err() { break; }
+                        if read_tx.send(Some(parse_daemon_message(&l))).is_err() {
+                            break;
+                        }
                     }
                     Ok(_) => {}
-                    Err(_) => { let _ = read_tx.send(None); break; }
+                    Err(_) => {
+                        let _ = read_tx.send(None);
+                        break;
+                    }
                 }
             }
         })
@@ -130,13 +207,20 @@ fn run_connected(
 
     let mut write_stream = match stream.try_clone() {
         Ok(s) => s,
-        Err(e) => { eprintln!("jarvis-ipc: write clone failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("jarvis-ipc: write clone failed: {e}");
+            return;
+        }
     };
 
     loop {
         loop {
             match read_rx.try_recv() {
-                Ok(Some(event)) => { if event_tx.send(event).is_err() { return; } }
+                Ok(Some(event)) => {
+                    if event_tx.send(event).is_err() {
+                        return;
+                    }
+                }
                 Ok(None) => return,
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return,
@@ -145,12 +229,19 @@ fn run_connected(
 
         match command_rx.recv_timeout(COMMAND_POLL) {
             Ok(IpcCommand::SendMessage(content)) => {
-                let msg = format!("{}\n", serde_json::json!({"type":"message","content":content}));
-                if write_stream.write_all(msg.as_bytes()).is_err() { return; }
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"message","content":content})
+                );
+                if write_stream.write_all(msg.as_bytes()).is_err() {
+                    return;
+                }
             }
             Ok(IpcCommand::StartListening) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"start_listening"}));
-                if write_stream.write_all(msg.as_bytes()).is_err() { return; }
+                if write_stream.write_all(msg.as_bytes()).is_err() {
+                    return;
+                }
             }
             Ok(IpcCommand::StopListening) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"stop_listening"}));
@@ -174,15 +265,27 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
 
     match value.get("type").and_then(|t| t.as_str()) {
         Some("state") => IpcEvent::State(
-            value.get("state").and_then(|s| s.as_str()).unwrap_or("idle").to_string()
+            value
+                .get("state")
+                .and_then(|s| s.as_str())
+                .unwrap_or("idle")
+                .to_string(),
         ),
         Some("response") => IpcEvent::ResponseChunk {
-            content: value.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string(),
-            done:    value.get("done").and_then(|d| d.as_bool()).unwrap_or(true),
+            content: value
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string(),
+            done: value.get("done").and_then(|d| d.as_bool()).unwrap_or(true),
         },
         Some("wake_word_detected") => IpcEvent::WakeWordDetected,
         Some("error") => IpcEvent::Error(
-            value.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error").to_string()
+            value
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error")
+                .to_string(),
         ),
         Some("ping") | Some("pong") => IpcEvent::State("idle".into()),
         other => IpcEvent::Error(format!("unknown type: {other:?}")),
