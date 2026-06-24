@@ -53,8 +53,7 @@ pub fn jarvis_data_dir() -> String {
     #[cfg(windows)]
     {
         let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-            let home = std::env::var("USERPROFILE")
-                .unwrap_or_else(|_| "C:\\Users\\Default".into());
+            let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".into());
             format!("{}\\AppData\\Local", home)
         });
         format!("{}\\jarvis", base)

@@ -7,11 +7,7 @@ fn main() {
             uri: "JarvisWidget",
             version_major: 1,
             version_minor: 0,
-            qml_files: &[
-                "qml/Widget.qml",
-                "qml/ResponseView.qml",
-                "qml/InputBar.qml",
-            ],
+            qml_files: &["qml/Widget.qml", "qml/ResponseView.qml", "qml/InputBar.qml"],
             ..Default::default()
         })
         .build();

@@ -11,16 +11,26 @@ use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(windows)]
 use std::net::{TcpListener, TcpStream};
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl, QString};
+use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
 fn control_socket_path() -> String {
     let dir = ipc::jarvis_data_dir();
-    format!("{}{}{}", dir, std::path::MAIN_SEPARATOR, "jarvis-widget.sock")
+    format!(
+        "{}{}{}",
+        dir,
+        std::path::MAIN_SEPARATOR,
+        "jarvis-widget.sock"
+    )
 }
 
 fn control_cmd_path() -> String {
     let dir = ipc::jarvis_data_dir();
-    format!("{}{}{}", dir, std::path::MAIN_SEPARATOR, "jarvis-widget-cmd")
+    format!(
+        "{}{}{}",
+        dir,
+        std::path::MAIN_SEPARATOR,
+        "jarvis-widget-cmd"
+    )
 }
 
 #[derive(Debug, PartialEq)]
@@ -142,13 +152,9 @@ fn start_control_listener(ctrl_tx: mpsc::Sender<ControlCommand>) {
     if let Some(parent) = std::path::Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let listener = UnixListener::bind(&*path)
-        .expect("failed to bind control socket");
+    let listener = UnixListener::bind(&*path).expect("failed to bind control socket");
 
-    let _ = std::fs::set_permissions(
-        &*path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o666),
-    );
+    let _ = std::fs::set_permissions(&*path, std::os::unix::fs::PermissionsExt::from_mode(0o666));
 
     thread::Builder::new()
         .name("jarvis-widget-listener".into())
@@ -164,7 +170,9 @@ fn start_control_listener(ctrl_tx: mpsc::Sender<ControlCommand>) {
                                 _ => None,
                             };
                             if let Some(c) = cmd {
-                                if ctrl_tx.send(c).is_err() { return; }
+                                if ctrl_tx.send(c).is_err() {
+                                    return;
+                                }
                             }
                         }
                     }
@@ -176,8 +184,7 @@ fn start_control_listener(ctrl_tx: mpsc::Sender<ControlCommand>) {
 
 #[cfg(windows)]
 fn start_control_listener(ctrl_tx: mpsc::Sender<ControlCommand>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .expect("failed to bind control listener");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind control listener");
 
     let port = listener.local_addr().unwrap().port();
     let port_file = format!("{}.port", control_socket_path());
@@ -200,7 +207,9 @@ fn start_control_listener(ctrl_tx: mpsc::Sender<ControlCommand>) {
                                 _ => None,
                             };
                             if let Some(c) = cmd {
-                                if ctrl_tx.send(c).is_err() { return; }
+                                if ctrl_tx.send(c).is_err() {
+                                    return;
+                                }
                             }
                         }
                     }
