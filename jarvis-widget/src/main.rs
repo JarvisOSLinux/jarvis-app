@@ -13,30 +13,14 @@ use std::net::{TcpListener, TcpStream};
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl, QString};
 
-#[cfg(unix)]
-const CONTROL_SOCKET: &str = "/tmp/jarvis-widget.sock";
-
-#[cfg(unix)]
-const CONTROL_CMD_FILE: &str = "/tmp/jarvis-widget-cmd";
-
-#[cfg(windows)]
 fn control_socket_path() -> String {
-    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-        let home =
-            std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".into());
-        format!("{}\\AppData\\Local", home)
-    });
-    format!("{}\\jarvis\\jarvis-widget.sock", base)
+    let dir = ipc::jarvis_data_dir();
+    format!("{}{}{}", dir, std::path::MAIN_SEPARATOR, "jarvis-widget.sock")
 }
 
-#[cfg(windows)]
 fn control_cmd_path() -> String {
-    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-        let home =
-            std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".into());
-        format!("{}\\AppData\\Local", home)
-    });
-    format!("{}\\jarvis\\jarvis-widget-cmd", base)
+    let dir = ipc::jarvis_data_dir();
+    format!("{}{}{}", dir, std::path::MAIN_SEPARATOR, "jarvis-widget-cmd")
 }
 
 #[derive(Debug, PartialEq)]
@@ -88,7 +72,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let cmd_file = cmd_file_path();
+    let cmd_file = control_cmd_path();
     thread::Builder::new()
         .name("jarvis-widget-ctrl".into())
         .spawn(move || {
@@ -105,35 +89,20 @@ fn main() {
     app.exec();
 
     cleanup_control_socket();
-    let _ = std::fs::remove_file(cmd_file_path());
-}
-
-fn cmd_file_path() -> String {
-    #[cfg(unix)]
-    {
-        CONTROL_CMD_FILE.to_string()
-    }
-    #[cfg(windows)]
-    {
-        control_cmd_path()
-    }
+    let _ = std::fs::remove_file(control_cmd_path());
 }
 
 fn cleanup_control_socket() {
-    #[cfg(unix)]
-    {
-        let _ = std::fs::remove_file(CONTROL_SOCKET);
-    }
-    #[cfg(windows)]
-    {
-        let port_file = format!("{}.port", control_socket_path());
-        let _ = std::fs::remove_file(&port_file);
-    }
+    let path = control_socket_path();
+    let _ = std::fs::remove_file(&path);
+    let port_file = format!("{}.port", path);
+    let _ = std::fs::remove_file(&port_file);
 }
 
 #[cfg(unix)]
 fn send_to_existing(cmd: &ControlCommand) -> bool {
-    if let Ok(mut stream) = UnixStream::connect(CONTROL_SOCKET) {
+    let path = control_socket_path();
+    if let Ok(mut stream) = UnixStream::connect(&*path) {
         let msg = match cmd {
             ControlCommand::Toggle => "toggle\n",
             ControlCommand::Stop => "stop\n",
@@ -169,11 +138,15 @@ fn send_to_existing(cmd: &ControlCommand) -> bool {
 
 #[cfg(unix)]
 fn start_control_listener(ctrl_tx: mpsc::Sender<ControlCommand>) {
-    let listener = UnixListener::bind(CONTROL_SOCKET)
+    let path = control_socket_path();
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let listener = UnixListener::bind(&*path)
         .expect("failed to bind control socket");
 
     let _ = std::fs::set_permissions(
-        CONTROL_SOCKET,
+        &*path,
         std::os::unix::fs::PermissionsExt::from_mode(0o666),
     );
 

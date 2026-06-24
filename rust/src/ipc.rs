@@ -26,19 +26,39 @@ type IpcStream = TcpStream;
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const COMMAND_POLL: Duration = Duration::from_millis(50);
 
-#[cfg(unix)]
 fn default_socket_path() -> String {
-    "/tmp/jarvis.sock".to_string()
+    let dir = jarvis_data_dir();
+    format!("{}{}{}", dir, std::path::MAIN_SEPARATOR, "jarvis.sock")
 }
 
-#[cfg(windows)]
-fn default_socket_path() -> String {
-    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-        let home =
-            std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".into());
-        format!("{}\\AppData\\Local", home)
-    });
-    format!("{}\\jarvis\\jarvis.sock", base)
+/// Mirrors Project-JARVIS's per-platform data_dir() so sockets land in the
+/// same directory the daemon uses.
+pub fn jarvis_data_dir() -> String {
+    if let Ok(d) = std::env::var("JARVIS_DATA_DIR") {
+        return d;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            format!("{}/.local/share", home)
+        });
+        format!("{}/jarvis", base)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        format!("{}/Library/Application Support/jarvis", home)
+    }
+    #[cfg(windows)]
+    {
+        let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
+            let home = std::env::var("USERPROFILE")
+                .unwrap_or_else(|_| "C:\\Users\\Default".into());
+            format!("{}\\AppData\\Local", home)
+        });
+        format!("{}\\jarvis", base)
+    }
 }
 
 fn socket_path() -> String {
