@@ -88,6 +88,7 @@ pub enum IpcEvent {
     State(String),
     ResponseChunk { content: String, done: bool },
     WakeWordDetected,
+    ConfirmationRequest { id: String, description: String },
     Error(String),
 }
 
@@ -96,6 +97,7 @@ pub enum IpcCommand {
     SendMessage(String),
     StartListening,
     StopListening,
+    ConfirmationResponse { id: String, approved: bool },
     Shutdown,
 }
 
@@ -244,6 +246,13 @@ fn run_connected(
                 let msg = format!("{}\n", serde_json::json!({"type":"stop_listening"}));
                 let _ = write_stream.write_all(msg.as_bytes());
             }
+            Ok(IpcCommand::ConfirmationResponse { id, approved }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"confirmation_response","id":id,"approved":approved})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
             Ok(IpcCommand::Shutdown) => return,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -273,6 +282,18 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
             done: value.get("done").and_then(|d| d.as_bool()).unwrap_or(true),
         },
         Some("wake_word_detected") => IpcEvent::WakeWordDetected,
+        Some("confirmation_request") => IpcEvent::ConfirmationRequest {
+            id: value
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            description: value
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        },
         Some("error") => IpcEvent::Error(
             value
                 .get("message")
