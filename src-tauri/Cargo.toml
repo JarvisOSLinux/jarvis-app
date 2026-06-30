@@ -16,6 +16,9 @@ path = "src/main.rs"
 tauri       = { version = "2", features = [] }
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
+# time 0.3.52 broke the Parsable::parse trait used by cookie 0.18.x (a Tauri
+# transitive dep). Cap below 0.3.52 until cookie publishes a compatible release.
+time        = ">=0.3, <0.3.52"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
