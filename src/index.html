@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header id="header">
+        <div class="header-info">
+            <div class="header-title">JARVIS</div>
+            <div class="header-subtitle">AI Operating System</div>
+        </div>
+        <div id="status-indicator">
+            <div id="status-dot"></div>
+            <span id="status-label">Offline</span>
+        </div>
+    </header>
+
+    <div id="chat-view">
+        <div id="empty-state">
+            <div class="empty-logo">
+                <div class="empty-logo-inner">J</div>
+            </div>
+            <div class="empty-title">Hello. I&rsquo;m JARVIS.</div>
+            <div class="empty-subtitle">How can I assist you today?</div>
+        </div>
+        <div id="messages"></div>
+    </div>
+
+    <div id="divider"></div>
+
+    <div id="input-bar">
+        <div class="input-wrapper">
+            <input
+                type="text"
+                id="message-input"
+                placeholder="Connecting to daemon&hellip;"
+                autocomplete="off"
+                disabled
+            >
+        </div>
+        <button class="icon-btn" id="mic-btn" title="Toggle voice input">&#127908;</button>
+        <button class="icon-btn" id="send-btn" title="Send message" disabled>&#9654;</button>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>

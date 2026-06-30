@@ -1,5 +1,5 @@
-# Rust
-rust/target/
+# Rust / Tauri
+src-tauri/target/
 **/*.rs.bk
 
 # Python
@@ -9,13 +9,6 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-
-# Qt / CMake build artifacts
-rust/build/
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
 
 # IDE
 .idea/
