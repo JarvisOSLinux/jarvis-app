@@ -3,76 +3,90 @@
 ## What This Is
 
 Desktop UI for the JARVIS daemon. ChatGPT-style chat interface built with
-Rust + CXX-Qt 0.7 + Qt6/QML. Connects to the JARVIS Python daemon over a
+Rust + Tauri 2 + HTML/CSS/JS. Connects to the JARVIS Python daemon over a
 bidirectional Unix socket using newline-delimited JSON.
-
-Also includes a lightweight floating widget variant (`jarvis-widget/`).
 
 ## Role in the JARVIS Ecosystem
 
 jarvisos-app is the graphical alternative to Project-JARVIS's Textual TUI.
 Both connect to the same daemon over the same IPC protocol. The TUI is the
-primary workspace; the Qt app is for desktop Linux users who prefer a GUI.
+primary workspace; the Tauri app is for desktop Linux users who prefer a GUI.
 
 ## Tech Stack
 
-- Rust + CXX-Qt 0.7 (Rust <-> C++ <-> QML bridge)
-- Qt6 (QtBase + QtDeclarative/QML)
-- CMake + Ninja (Qt6 build system)
-- serde / serde_json for JSON IPC
-- chrono for timestamps
+- Rust + Tauri 2 (native backend, WebKitGTK frontend on Linux)
+- HTML/CSS/JS (no framework, no bundler)
+- serde / serde_json for JSON IPC and Tauri command payloads
+- WebKitGTK 4.1 (Linux), WebView2 (Windows), WKWebView (macOS)
 
 ## Architecture
 
 ```
-rust/
+src-tauri/
 ├── src/
-│   ├── main.rs       Qt application entry point
-│   ├── ipc.rs        IPC client with auto-reconnect (background thread)
-│   └── bridge.rs     CXX-Qt bridge (QML <-> Rust signals/slots)
-├── qml/
-│   ├── Main.qml           Root window, header, layout
-│   ├── ChatView.qml       Message list with streaming support
-│   ├── MessageBubble.qml  User/JARVIS message bubbles
-│   ├── InputBar.qml       Text input + mic + send button
-│   └── StatusIndicator.qml Animated status dot
-├── build.rs          CXX-Qt compilation
-└── resources.qrc     Qt resource bundle
+│   ├── main.rs       Tauri entry point
+│   ├── lib.rs        #[tauri::command] handlers + IPC poll thread
+│   └── ipc.rs        IPC client with auto-reconnect (background thread)
+├── Cargo.toml
+├── tauri.conf.json   Window config, withGlobalTauri: true
+└── build.rs          tauri-build
+
+src/
+├── index.html        App shell (header, chat-view, input-bar)
+├── styles.css        Dark navy + cyan theme
+└── main.js           IPC event listeners, message rendering
 
 python/
 ├── ipc_server.py          Async Unix socket server (daemon side)
 └── main_integration.py    Integration guide for wiring into JARVIS daemon
-
-jarvis-widget/             Lightweight floating widget (same tech stack, simpler UI)
 ```
 
 ### IPC Protocol
 
-Socket: `/tmp/jarvis.sock`, newline-delimited JSON.
+Socket: `~/.local/share/jarvis/jarvis.sock` (mirrors daemon's data_dir).
+Override with `JARVIS_SOCKET` env var. Newline-delimited JSON.
 
-**Client -> Daemon**: `message`, `start_listening`, `stop_listening`, `ping`
-**Daemon -> Client**: `state`, `response` (streaming), `wake_word_detected`, `error`
+**Client -> Daemon**: `message`, `start_listening`, `stop_listening`,
+                      `stop_stream`, `confirmation_response`, `ping`
+**Daemon -> Client**: `state`, `response` (streaming), `wake_word_detected`,
+                      `confirmation_request`, `error`
 
 States: `idle`, `listening`, `processing`, `speaking`, `offline`
+
+### Tauri Command / Event Mapping
+
+| Tauri command (JS → Rust)       | Tauri event (Rust → JS)  |
+|---------------------------------|--------------------------|
+| `send_message`                  | `ipc-connected`          |
+| `toggle_listening`              | `ipc-disconnected`       |
+| `stop_stream`                   | `ipc-state` (string)     |
+| `send_confirmation_response`    | `ipc-chunk` `{content, done}` |
+|                                 | `ipc-wake`               |
+|                                 | `ipc-confirm` `{id, description}` |
 
 ## Build
 
 ### Prerequisites
 
-Arch: `sudo pacman -S qt6-base qt6-declarative cmake ninja rust`
-Fedora: `sudo dnf install qt6-qtbase-devel qt6-qtdeclarative-devel cmake ninja-build`
+Arch/CachyOS: `sudo pacman -S webkit2gtk-4.1 gtk3 rust`
+Fedora:       `sudo dnf install webkit2gtk4.1-devel gtk3-devel rust cargo`
+
+Install Tauri CLI: `cargo install tauri-cli`
 
 ### Compile
 
 ```bash
-cd rust
-cargo build --release
-# Binary: rust/target/release/jarvis-ui
+# Development (hot-reload frontend, native backend)
+cargo tauri dev
+
+# Release build
+cargo tauri build
+# Binary: src-tauri/target/release/jarvis-ui
 ```
 
 ## Theme
 
-Dark navy (#0a0e1a) + JARVIS cyan (#00c8ff). Monospace font: Hack/JetBrains Mono.
+Dark navy (`#0a0e1a`) + JARVIS cyan (`#00c8ff`). Monospace font: Hack/JetBrains Mono.
 
 ## Conventions
 

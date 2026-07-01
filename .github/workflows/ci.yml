@@ -20,5 +20,5 @@ jobs:
           components: rustfmt, clippy
 
       - name: Format
-        working-directory: rust
+        working-directory: src-tauri
         run: cargo fmt --check

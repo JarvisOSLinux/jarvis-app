@@ -5,7 +5,8 @@
 //! Windows: reads a `.port` file and connects via TCP to 127.0.0.1.
 //! Auto-reconnects every 2s on disconnect.
 //!
-//! Adapted from jarvis-ui with added StopStream command.
+//! IPC thread  -> Qt thread : event_rx  (mpsc Receiver<IpcEvent>)
+//! Qt thread   -> IPC thread: command_tx (mpsc Sender<IpcCommand>)
 
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -30,7 +31,8 @@ fn default_socket_path() -> String {
     format!("{}{}{}", dir, std::path::MAIN_SEPARATOR, "jarvis.sock")
 }
 
-/// Mirrors Project-JARVIS's per-platform data_dir().
+/// Mirrors Project-JARVIS's per-platform data_dir() so sockets land in the
+/// same directory the daemon uses.
 pub fn jarvis_data_dir() -> String {
     if let Ok(d) = std::env::var("JARVIS_DATA_DIR") {
         return d;
@@ -143,6 +145,12 @@ impl IpcClient {
 
     pub fn stop_stream(&self) {
         let _ = self.command_tx.send(IpcCommand::StopStream);
+    }
+
+    pub fn confirmation_response(&self, id: String, approved: bool) {
+        let _ = self
+            .command_tx
+            .send(IpcCommand::ConfirmationResponse { id, approved });
     }
 }
 

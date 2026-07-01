@@ -1,0 +1,38 @@
+[package]
+name = "jarvis-ui"
+version = "0.1.0"
+edition = "2021"
+description = "JARVIS OS -- Chat UI (Tauri)"
+
+[lib]
+name = "jarvis_ui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "jarvis-ui"
+path = "src/main.rs"
+
+[dependencies]
+tauri       = { version = "2", features = [] }
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+# time 0.3.52 broke the Parsable::parse trait used by cookie 0.18.x (a Tauri
+# transitive dep). Cap below 0.3.52 until cookie publishes a compatible release.
+time        = ">=0.3, <0.3.52"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[profile.release]
+lto           = true
+strip         = true
+codegen-units = 1
+
+# Build requirements (Arch Linux):
+#   sudo pacman -S webkit2gtk-4.1 gtk3 rust
+#   cargo install tauri-cli
+#
+# Build:
+#   cargo tauri build
+# Run in dev:
+#   cargo tauri dev
