@@ -186,4 +186,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const approved = window.confirm('JARVIS wants to:\n\n' + description + '\n\nAllow?');
         await invoke('send_confirmation_response', { id, approved });
     });
+
+    // Listeners are now registered, but the backend's IPC poll thread may have
+    // already emitted ipc-connected/ipc-state before this point (Tauri does not
+    // queue events for late listeners). Pull current truth to reconcile.
+    const status = await invoke('get_status');
+    setConnected(status.connected);
+    setStatus(status.state);
 });
