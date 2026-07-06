@@ -47,9 +47,21 @@ Socket: `~/.local/share/jarvis/jarvis.sock` (mirrors daemon's data_dir).
 Override with `JARVIS_SOCKET` env var. Newline-delimited JSON.
 
 **Client -> Daemon**: `message`, `start_listening`, `stop_listening`,
-                      `stop_stream`, `confirmation_response`, `ping`
+                      `stop_stream`, `confirmation_response`, `ping`,
+                      `list_sessions`, `create_session`, `switch_session`,
+                      `rename_session`, `delete_session`
 **Daemon -> Client**: `state`, `response` (streaming), `wake_word_detected`,
-                      `confirmation_request`, `error`
+                      `confirmation_request`, `error`, `session_list`,
+                      `session_switched`, `session_error`
+
+Session CRUD (`Project-JARVIS`'s `jarvis/runtime/io.py`) is a thin wrapper
+over the existing `SessionManager` (`new_session`/`list`/`switch`/`rename`/
+`delete`) -- no separate storage on the GUI socket side. `switch_session`
+returns the session plus its `conversation_log` history as
+`{role, content, timestamp}` messages so a client can render it immediately.
+Session mutations (create/switch/rename/delete) broadcast to every connected
+GUI client, since there's one shared "current session" pointer on the
+daemon; `list_sessions` and errors reply to the requester only.
 
 States: `idle`, `listening`, `processing`, `speaking`, `offline`
 
