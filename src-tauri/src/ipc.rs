@@ -93,8 +93,10 @@ pub enum IpcEvent {
     WakeWordDetected,
     ConfirmationRequest {
         id: String,
-        description: String,
+        tool_names: Vec<String>,
     },
+    ConfirmationList(Vec<serde_json::Value>),
+    Ack,
     Error(String),
     SessionList(Vec<serde_json::Value>),
     SessionSwitched {
@@ -111,6 +113,10 @@ pub enum IpcCommand {
     StopListening,
     StopStream,
     ConfirmationResponse { id: String, approved: bool },
+    ListConfirmations,
+    ApproveConfirmation { id: String },
+    DenyConfirmation { id: String },
+    ApproveAllConfirmations,
     ListSessions,
     CreateSession { title: Option<String> },
     SwitchSession { id: String },
@@ -168,6 +174,22 @@ impl IpcClient {
         let _ = self
             .command_tx
             .send(IpcCommand::ConfirmationResponse { id, approved });
+    }
+
+    pub fn list_confirmations(&self) {
+        let _ = self.command_tx.send(IpcCommand::ListConfirmations);
+    }
+
+    pub fn approve_confirmation(&self, id: String) {
+        let _ = self.command_tx.send(IpcCommand::ApproveConfirmation { id });
+    }
+
+    pub fn deny_confirmation(&self, id: String) {
+        let _ = self.command_tx.send(IpcCommand::DenyConfirmation { id });
+    }
+
+    pub fn approve_all_confirmations(&self) {
+        let _ = self.command_tx.send(IpcCommand::ApproveAllConfirmations);
     }
 
     pub fn list_sessions(&self) {
@@ -307,6 +329,31 @@ fn run_connected(
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
+            Ok(IpcCommand::ListConfirmations) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"list_confirmations"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::ApproveConfirmation { id }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"approve_confirmation","id":id})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::DenyConfirmation { id }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"deny_confirmation","id":id})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::ApproveAllConfirmations) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"approve_all_confirmations"})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
             Ok(IpcCommand::ListSessions) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"list_sessions"}));
                 let _ = write_stream.write_all(msg.as_bytes());
@@ -368,12 +415,24 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
-            description: value
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            tool_names: value
+                .get("tools")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
         },
+        Some("confirmation_list") => IpcEvent::ConfirmationList(
+            value
+                .get("confirmations")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default(),
+        ),
+        Some("ack") => IpcEvent::Ack,
         Some("error") => IpcEvent::Error(
             value
                 .get("message")
@@ -408,5 +467,127 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
         ),
         Some("ping") | Some("pong") => IpcEvent::State("idle".into()),
         other => IpcEvent::Error(format!("unknown type: {other:?}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+    use std::os::unix::net::UnixStream as TestUnixStream;
+    use std::time::{Duration, Instant};
+
+    fn unique_sock_path(name: &str) -> String {
+        format!(
+            "/tmp/jarvis-ipc-test-{}-{}-{}.sock",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )
+    }
+
+    fn read_line(reader: &mut BufReader<TestUnixStream>) -> serde_json::Value {
+        let mut buf = String::new();
+        reader.read_line(&mut buf).unwrap();
+        serde_json::from_str(buf.trim_end()).unwrap()
+    }
+
+    fn wait_for_event(client: &IpcClient, pred: impl Fn(&IpcEvent) -> bool) -> IpcEvent {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(ev) = client.try_recv() {
+                if pred(&ev) {
+                    return ev;
+                }
+            }
+            if Instant::now() > deadline {
+                panic!("timed out waiting for expected IpcEvent");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    // Exercises the real IpcClient background threads end-to-end over an
+    // actual Unix socket -- not a mock -- so it catches wire-format drift
+    // between this client and jarvis's confirmation-query protocol.
+    #[test]
+    fn confirmation_commands_round_trip_over_real_socket() {
+        let path = unique_sock_path("confirmations");
+        let _ = std::fs::remove_file(&path);
+        std::env::set_var("JARVIS_SOCKET", &path);
+
+        let listener = UnixListener::bind(&path).unwrap();
+        let client = IpcClient::new();
+
+        let (stream, _) = listener.accept().unwrap();
+        let mut write_half = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+
+        wait_for_event(&client, |e| matches!(e, IpcEvent::Connected));
+
+        client.list_confirmations();
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "list_confirmations"})
+        );
+
+        client.approve_confirmation("req1".into());
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "approve_confirmation", "id": "req1"})
+        );
+
+        client.deny_confirmation("req2".into());
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "deny_confirmation", "id": "req2"})
+        );
+
+        client.approve_all_confirmations();
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "approve_all_confirmations"})
+        );
+
+        write_half
+            .write_all(
+                b"{\"type\":\"confirmation_list\",\"confirmations\":\
+                   [{\"id\":\"req1\",\"tool_names\":[\"fs.delete\"],\"created_at\":1.0}]}\n",
+            )
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::ConfirmationList(_))) {
+            IpcEvent::ConfirmationList(list) => {
+                assert_eq!(list.len(), 1);
+                assert_eq!(list[0]["id"], "req1");
+            }
+            _ => unreachable!(),
+        }
+
+        write_half
+            .write_all(b"{\"type\":\"ack\",\"message\":\"Approved req1\"}\n")
+            .unwrap();
+        assert!(matches!(
+            wait_for_event(&client, |e| matches!(e, IpcEvent::Ack)),
+            IpcEvent::Ack
+        ));
+
+        write_half
+            .write_all(b"{\"type\":\"confirmation_request\",\"id\":\"req3\",\"tools\":[\"net.request\"]}\n")
+            .unwrap();
+        match wait_for_event(&client, |e| {
+            matches!(e, IpcEvent::ConfirmationRequest { .. })
+        }) {
+            IpcEvent::ConfirmationRequest { id, tool_names } => {
+                assert_eq!(id, "req3");
+                assert_eq!(tool_names, vec!["net.request".to_string()]);
+            }
+            _ => unreachable!(),
+        }
+
+        std::env::remove_var("JARVIS_SOCKET");
+        let _ = std::fs::remove_file(&path);
     }
 }
