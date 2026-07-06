@@ -36,8 +36,13 @@ const approveAllBtn      = document.getElementById('approve-all-btn');
 let permissionFlashTimer = null;
 
 // ── Status ─────────────────────────────────────────────────────────────────
+// woken/capturing come from the daemon's formal voice state machine
+// (Project-JARVIS#141) -- both render like the existing "listening" state
+// since, from the user's point of view, the mic is active either way.
 const STATE_COLOR = {
     idle:       '#00c8ff',
+    woken:      '#00ff88',
+    capturing:  '#00ff88',
     listening:  '#00ff88',
     processing: '#ffaa00',
     speaking:   '#aa44ff',
@@ -46,11 +51,15 @@ const STATE_COLOR = {
 
 const STATE_LABEL = {
     idle:       'Idle',
+    woken:      'Listening',
+    capturing:  'Listening',
     listening:  'Listening',
     processing: 'Processing',
     speaking:   'Speaking',
     offline:    'Offline',
 };
+
+const LISTENING_LIKE_STATES = new Set(['listening', 'woken', 'capturing']);
 
 function setStatus(state) {
     const color = STATE_COLOR[state] ?? STATE_COLOR.offline;
@@ -59,10 +68,10 @@ function setStatus(state) {
     statusLabel.style.color      = color;
     statusLabel.textContent      = STATE_LABEL[state] ?? 'Offline';
 
-    const pulsing = state === 'listening' || state === 'processing' || state === 'speaking';
+    const pulsing = LISTENING_LIKE_STATES.has(state) || state === 'processing' || state === 'speaking';
     statusDot.classList.toggle('pulsing', pulsing);
 
-    isListening = state === 'listening';
+    isListening = LISTENING_LIKE_STATES.has(state);
     micBtn.classList.toggle('listening', isListening);
 }
 

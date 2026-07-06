@@ -63,7 +63,12 @@ Session mutations (create/switch/rename/delete) broadcast to every connected
 GUI client, since there's one shared "current session" pointer on the
 daemon; `list_sessions` and errors reply to the requester only.
 
-States: `idle`, `listening`, `processing`, `speaking`, `offline`
+States: `idle`, `woken`, `capturing`, `listening`, `processing`, `speaking`, `offline`.
+`woken`/`capturing`/`processing`/`speaking` come from the daemon's formal
+voice/response state machine (`Project-JARVIS`#141); `listening` is the
+separate manual mic-toggle state; `offline` is client-side only (never sent
+by the daemon). The daemon's `state` message can also carry a `meta` object
+(currently just a discard reason) -- not yet consumed here.
 
 ### Tauri Command / Event Mapping
 
@@ -73,8 +78,10 @@ States: `idle`, `listening`, `processing`, `speaking`, `offline`
 | `toggle_listening`              | `ipc-disconnected`       |
 | `stop_stream`                   | `ipc-state` (string)     |
 | `send_confirmation_response`    | `ipc-chunk` `{content, done}` |
-|                                 | `ipc-wake`               |
-|                                 | `ipc-confirm` `{id, description}` |
+| `list_confirmations`            | `ipc-wake`               |
+| `approve_confirmation`          | `ipc-confirm` `{id, tool_names}` |
+| `deny_confirmation`             | `ipc-confirmation-list` `[{id, tool_names, created_at}]` |
+| `approve_all_confirmations`     |                          |
 
 ## Build
 
