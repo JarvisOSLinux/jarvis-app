@@ -13,7 +13,8 @@ name = "jarvis-ui"
 path = "src/main.rs"
 
 [dependencies]
-tauri       = { version = "2", features = [] }
+tauri       = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 # time 0.3.52 broke the Parsable::parse trait used by cookie 0.18.x (a Tauri
