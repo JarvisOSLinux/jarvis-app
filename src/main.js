@@ -100,15 +100,17 @@ function addUserMessage(content) {
     scrollBottom();
 }
 
+const STREAM_CURSOR = ' <span class="stream-cursor">▌</span>';
+
 function appendJarvisChunk(content, done) {
     showMessages();
     const streaming = messages.querySelector('.jarvis-message.streaming');
 
     if (streaming) {
-        const span = streaming.querySelector('.bubble-text');
-        const accumulated = (span.dataset.raw ?? '') + content;
-        span.dataset.raw   = accumulated;
-        span.textContent   = accumulated + (done ? '' : ' ▌');
+        const textEl = streaming.querySelector('.bubble-text');
+        const accumulated = (textEl.dataset.raw ?? '') + content;
+        textEl.dataset.raw = accumulated;
+        textEl.innerHTML   = renderMarkdown(accumulated) + (done ? '' : STREAM_CURSOR);
         if (done) streaming.classList.remove('streaming');
     } else {
         const el = document.createElement('div');
@@ -124,16 +126,16 @@ function appendJarvisChunk(content, done) {
         const bubble = document.createElement('div');
         bubble.className = 'bubble jarvis-bubble';
 
-        const span = document.createElement('span');
-        span.className    = 'bubble-text';
-        span.dataset.raw  = content;
-        span.textContent  = content + (done ? '' : ' ▌');
+        const textEl = document.createElement('div');
+        textEl.className   = 'bubble-text markdown-content';
+        textEl.dataset.raw = content;
+        textEl.innerHTML   = renderMarkdown(content) + (done ? '' : STREAM_CURSOR);
 
         const ts = document.createElement('div');
         ts.className   = 'timestamp';
         ts.textContent = timestamp();
 
-        bubble.append(span);
+        bubble.append(textEl);
         col.append(bubble, ts);
         el.append(avatar, col);
         messages.append(el);
