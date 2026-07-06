@@ -97,6 +97,14 @@ pub enum IpcEvent {
     },
     ConfirmationList(Vec<serde_json::Value>),
     Ack,
+    ConfigUpdated {
+        key: String,
+        value: String,
+    },
+    ConfigError {
+        key: String,
+        message: String,
+    },
     Error(String),
     SessionList(Vec<serde_json::Value>),
     SessionSwitched {
@@ -117,6 +125,7 @@ pub enum IpcCommand {
     ApproveConfirmation { id: String },
     DenyConfirmation { id: String },
     ApproveAllConfirmations,
+    SetWakeChimePath { path: String },
     ListSessions,
     CreateSession { title: Option<String> },
     SwitchSession { id: String },
@@ -190,6 +199,10 @@ impl IpcClient {
 
     pub fn approve_all_confirmations(&self) {
         let _ = self.command_tx.send(IpcCommand::ApproveAllConfirmations);
+    }
+
+    pub fn set_wake_chime_path(&self, path: String) {
+        let _ = self.command_tx.send(IpcCommand::SetWakeChimePath { path });
     }
 
     pub fn list_sessions(&self) {
@@ -354,6 +367,13 @@ fn run_connected(
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
+            Ok(IpcCommand::SetWakeChimePath { path }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"set_wake_chime_path","path":path})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
             Ok(IpcCommand::ListSessions) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"list_sessions"}));
                 let _ = write_stream.write_all(msg.as_bytes());
@@ -432,6 +452,30 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .cloned()
                 .unwrap_or_default(),
         ),
+        Some("config_updated") => IpcEvent::ConfigUpdated {
+            key: value
+                .get("key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            value: value
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        },
+        Some("config_error") => IpcEvent::ConfigError {
+            key: value
+                .get("key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            message: value
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        },
         Some("ack") => IpcEvent::Ack,
         Some("error") => IpcEvent::Error(
             value
@@ -583,6 +627,38 @@ mod tests {
             IpcEvent::ConfirmationRequest { id, tool_names } => {
                 assert_eq!(id, "req3");
                 assert_eq!(tool_names, vec!["net.request".to_string()]);
+            }
+            _ => unreachable!(),
+        }
+
+        client.set_wake_chime_path("/tmp/my-chime.wav".into());
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "set_wake_chime_path", "path": "/tmp/my-chime.wav"})
+        );
+
+        write_half
+            .write_all(
+                b"{\"type\":\"config_updated\",\"key\":\"WAKE_CHIME_PATH\",\"value\":\"/tmp/my-chime.wav\"}\n",
+            )
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::ConfigUpdated { .. })) {
+            IpcEvent::ConfigUpdated { key, value } => {
+                assert_eq!(key, "WAKE_CHIME_PATH");
+                assert_eq!(value, "/tmp/my-chime.wav");
+            }
+            _ => unreachable!(),
+        }
+
+        write_half
+            .write_all(
+                b"{\"type\":\"config_error\",\"key\":\"WAKE_CHIME_PATH\",\"message\":\"not a file: x\"}\n",
+            )
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::ConfigError { .. })) {
+            IpcEvent::ConfigError { key, message } => {
+                assert_eq!(key, "WAKE_CHIME_PATH");
+                assert_eq!(message, "not a file: x");
             }
             _ => unreachable!(),
         }
