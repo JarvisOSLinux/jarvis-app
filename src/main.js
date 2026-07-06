@@ -25,6 +25,16 @@ const sessionSidebar  = document.getElementById('session-sidebar');
 const sessionList     = document.getElementById('session-list');
 const newSessionBtn   = document.getElementById('new-session-btn');
 
+const permissionsBtn     = document.getElementById('permissions-btn');
+const permissionIndicator = document.getElementById('permission-indicator');
+const permissionBackdrop = document.getElementById('permission-backdrop');
+const permissionPanel    = document.getElementById('permission-panel');
+const permissionPanelTitle = document.getElementById('permission-panel-title');
+const permissionList     = document.getElementById('permission-list');
+const approveAllBtn      = document.getElementById('approve-all-btn');
+
+let permissionFlashTimer = null;
+
 // ── Status ─────────────────────────────────────────────────────────────────
 const STATE_COLOR = {
     idle:       '#00c8ff',
@@ -306,6 +316,98 @@ function restoreSessionMessages(session, msgs) {
     });
 }
 
+// ── Permission requests ────────────────────────────────────────────────────
+function openPermissionPanel() {
+    permissionPanel.classList.add('visible');
+    permissionBackdrop.classList.add('visible');
+    invoke('list_confirmations');
+}
+
+function closePermissionPanel() {
+    permissionPanel.classList.remove('visible');
+    permissionBackdrop.classList.remove('visible');
+}
+
+function togglePermissionPanel() {
+    permissionPanel.classList.contains('visible') ? closePermissionPanel() : openPermissionPanel();
+}
+
+function flashPermissionIndicator() {
+    clearTimeout(permissionFlashTimer);
+    permissionIndicator.classList.remove('flash');
+    void permissionIndicator.offsetWidth; // restart the fade if it's already flashing
+    permissionIndicator.classList.add('flash');
+    permissionFlashTimer = setTimeout(() => permissionIndicator.classList.remove('flash'), 2500);
+}
+
+function formatPermissionDate(epochSeconds) {
+    if (!epochSeconds) return '';
+    const d = new Date(epochSeconds * 1000);
+    return Number.isNaN(d.getTime())
+        ? ''
+        : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function buildPermissionItem(item) {
+    const el = document.createElement('div');
+    el.className = 'permission-item';
+    el.dataset.id = item.id;
+
+    const tools = document.createElement('div');
+    tools.className = 'permission-item-tools';
+    tools.textContent = item.tool_names && item.tool_names.length
+        ? item.tool_names.join(', ')
+        : 'Unknown tool';
+
+    const meta = document.createElement('div');
+    meta.className = 'permission-item-meta';
+    meta.textContent = formatPermissionDate(item.created_at);
+
+    const actions = document.createElement('div');
+    actions.className = 'permission-item-actions';
+
+    const approveBtn = document.createElement('button');
+    approveBtn.className = 'permission-action approve';
+    approveBtn.textContent = 'Approve';
+    approveBtn.addEventListener('click', () => resolveConfirmation(item.id, true));
+
+    const denyBtn = document.createElement('button');
+    denyBtn.className = 'permission-action deny';
+    denyBtn.textContent = 'Deny';
+    denyBtn.addEventListener('click', () => resolveConfirmation(item.id, false));
+
+    actions.append(approveBtn, denyBtn);
+    el.append(tools, meta, actions);
+    return el;
+}
+
+function renderPermissionList(items) {
+    permissionList.innerHTML = '';
+    permissionPanelTitle.textContent = items.length
+        ? `Permission Requests (${items.length})`
+        : 'Permission Requests';
+    approveAllBtn.disabled = items.length === 0;
+
+    if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'permission-empty';
+        empty.textContent = 'No pending requests.';
+        permissionList.append(empty);
+        return;
+    }
+    for (const item of items) permissionList.append(buildPermissionItem(item));
+}
+
+async function resolveConfirmation(id, approved) {
+    await invoke(approved ? 'approve_confirmation' : 'deny_confirmation', { id });
+    await invoke('list_confirmations');
+}
+
+async function approveAllConfirmations() {
+    await invoke('approve_all_confirmations');
+    await invoke('list_confirmations');
+}
+
 // ── Actions ────────────────────────────────────────────────────────────────
 async function sendMessage() {
     const text = messageInput.value.trim();
@@ -337,18 +439,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     sessionsBtn.addEventListener('click', toggleSidebar);
     sessionBackdrop.addEventListener('click', closeSidebar);
     newSessionBtn.addEventListener('click', createNewSession);
+    permissionsBtn.addEventListener('click', togglePermissionPanel);
+    permissionBackdrop.addEventListener('click', closePermissionPanel);
+    approveAllBtn.addEventListener('click', approveAllConfirmations);
 
     // IPC events from Rust backend
-    await listen('ipc-connected',    ()      => { setConnected(true); invoke('list_sessions'); });
+    await listen('ipc-connected',    ()      => { setConnected(true); invoke('list_sessions'); invoke('list_confirmations'); });
     await listen('ipc-disconnected', ()      => { setConnected(false); setStatus('offline'); });
     await listen('ipc-state',        (e)     => setStatus(e.payload));
     await listen('ipc-chunk',        (e)     => appendJarvisChunk(e.payload.content, e.payload.done));
     await listen('ipc-wake',         ()      => setStatus('listening'));
-    await listen('ipc-confirm',      async (e) => {
-        const { id, description } = e.payload;
-        const approved = window.confirm('JARVIS wants to:\n\n' + description + '\n\nAllow?');
-        await invoke('send_confirmation_response', { id, approved });
+    await listen('ipc-confirm', () => {
+        // Non-blocking by design: no window.confirm(), no toast. Just a
+        // subtle cue that the Permission Requests panel has something new.
+        flashPermissionIndicator();
+        invoke('list_confirmations');
     });
+    await listen('ipc-confirmation-list', (e) => renderPermissionList(e.payload));
     await listen('ipc-session-list', (e) => {
         renderSessionList(e.payload);
         if (currentSessionId === null && e.payload.length > 0) {
@@ -370,5 +477,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const status = await invoke('get_status');
     setConnected(status.connected);
     setStatus(status.state);
-    if (status.connected) await invoke('list_sessions');
+    if (status.connected) {
+        await invoke('list_sessions');
+        await invoke('list_confirmations');
+    }
 });

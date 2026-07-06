@@ -13,6 +13,10 @@
             <div class="header-title">JARVIS</div>
             <div class="header-subtitle">AI Operating System</div>
         </div>
+        <button class="icon-btn" id="permissions-btn" title="Permission Requests">
+            &#128274;
+            <span id="permission-indicator"></span>
+        </button>
         <div id="status-indicator">
             <div id="status-dot"></div>
             <span id="status-label">Offline</span>
@@ -26,6 +30,15 @@
             <button class="icon-btn" id="new-session-btn" title="New chat">+</button>
         </div>
         <div id="session-list"></div>
+    </aside>
+
+    <div id="permission-backdrop"></div>
+    <aside id="permission-panel">
+        <div id="permission-panel-header">
+            <span id="permission-panel-title">Permission Requests</span>
+            <button id="approve-all-btn" title="Approve all" disabled>Approve All</button>
+        </div>
+        <div id="permission-list"></div>
     </aside>
 
     <div id="chat-view">

@@ -28,7 +28,7 @@ struct ChunkPayload {
 #[derive(Serialize, Clone)]
 struct ConfirmPayload {
     id: String,
-    description: String,
+    tool_names: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -77,6 +77,26 @@ fn send_confirmation_response(id: String, approved: bool, state: State<AppState>
         .lock()
         .unwrap()
         .confirmation_response(id, approved);
+}
+
+#[tauri::command]
+fn list_confirmations(state: State<AppState>) {
+    state.ipc.lock().unwrap().list_confirmations();
+}
+
+#[tauri::command]
+fn approve_confirmation(id: String, state: State<AppState>) {
+    state.ipc.lock().unwrap().approve_confirmation(id);
+}
+
+#[tauri::command]
+fn deny_confirmation(id: String, state: State<AppState>) {
+    state.ipc.lock().unwrap().deny_confirmation(id);
+}
+
+#[tauri::command]
+fn approve_all_confirmations(state: State<AppState>) {
+    state.ipc.lock().unwrap().approve_all_confirmations();
 }
 
 #[tauri::command]
@@ -229,6 +249,10 @@ pub fn run() {
             stop_stream,
             send_confirmation_response,
             get_status,
+            list_confirmations,
+            approve_confirmation,
+            deny_confirmation,
+            approve_all_confirmations,
             list_sessions,
             create_session,
             switch_session,
@@ -287,9 +311,13 @@ fn poll_loop(
                     let _ = app.emit("ipc-wake", ());
                     let _ = app.emit("ipc-state", "listening");
                 }
-                IpcEvent::ConfirmationRequest { id, description } => {
-                    let _ = app.emit("ipc-confirm", ConfirmPayload { id, description });
+                IpcEvent::ConfirmationRequest { id, tool_names } => {
+                    let _ = app.emit("ipc-confirm", ConfirmPayload { id, tool_names });
                 }
+                IpcEvent::ConfirmationList(list) => {
+                    let _ = app.emit("ipc-confirmation-list", list);
+                }
+                IpcEvent::Ack => {}
                 IpcEvent::Error(_) => {}
                 IpcEvent::SessionList(sessions) => {
                     let _ = app.emit("ipc-session-list", sessions);
