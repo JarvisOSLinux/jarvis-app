@@ -27,8 +27,10 @@ src-tauri/
 │   ├── main.rs       Tauri entry point
 │   ├── lib.rs        #[tauri::command] handlers + IPC poll thread
 │   └── ipc.rs        IPC client with auto-reconnect (background thread)
+├── resources/
+│   └── wake_chime.wav  Bundled default wake-word sound (one-time override)
 ├── Cargo.toml
-├── tauri.conf.json   Window config, withGlobalTauri: true
+├── tauri.conf.json   Window config, withGlobalTauri: true, bundle.resources
 └── build.rs          tauri-build
 
 src/
@@ -49,10 +51,12 @@ Override with `JARVIS_SOCKET` env var. Newline-delimited JSON.
 **Client -> Daemon**: `message`, `start_listening`, `stop_listening`,
                       `stop_stream`, `confirmation_response`, `ping`,
                       `list_sessions`, `create_session`, `switch_session`,
-                      `rename_session`, `delete_session`
+                      `rename_session`, `delete_session`,
+                      `set_wake_chime_path`
 **Daemon -> Client**: `state`, `response` (streaming), `wake_word_detected`,
                       `confirmation_request`, `error`, `session_list`,
-                      `session_switched`, `session_error`
+                      `session_switched`, `session_error`,
+                      `config_updated`, `config_error`
 
 Session CRUD (`Project-JARVIS`'s `jarvis/runtime/io.py`) is a thin wrapper
 over the existing `SessionManager` (`new_session`/`list`/`switch`/`rename`/
@@ -69,6 +73,29 @@ voice/response state machine (`Project-JARVIS`#141); `listening` is the
 separate manual mic-toggle state; `offline` is client-side only (never sent
 by the daemon). The daemon's `state` message can also carry a `meta` object
 (currently just a discard reason) -- not yet consumed here.
+
+### Wake chime one-time bootstrap (Project-JARVIS#139)
+
+On first run only, jarvis-app overrides the daemon's `WAKE_CHIME_PATH` to
+its own bundled sound (`resources/wake_chime.wav`, a distinct three-note
+arpeggio from `Project-JARVIS`'s own bundled default) — proving an external
+project can actually customize the daemon's chime, not just that the config
+key theoretically exists. Implementation (`lib.rs`):
+
+- `pending_wake_chime_bootstrap()` checks a marker file in the app's own
+  data dir (`app_data_dir()/.wake_chime_bootstrapped`, distinct from the
+  daemon's `jarvis_data_dir()` used for socket discovery) at startup. If it
+  exists, nothing happens -- this really does run only once, ever.
+- If absent, the bundled resource path is resolved and `set_wake_chime_path`
+  is sent on every `Connected` event (retried across reconnects) until a
+  `config_updated` response for `WAKE_CHIME_PATH` confirms success, at which
+  point the marker is written and the poll loop stops sending it.
+- A `config_error` response is logged and left to retry on the next
+  reconnect/app launch -- a daemon that's merely offline on first launch
+  shouldn't silently skip the bootstrap forever.
+- After this one-time bootstrap, `jarvisos-app`#12's settings panel is the
+  ongoing, user-facing surface for changing the wake sound -- this code
+  never touches `WAKE_CHIME_PATH` again.
 
 ### Tauri Command / Event Mapping
 

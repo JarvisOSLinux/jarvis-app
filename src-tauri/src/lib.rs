@@ -2,15 +2,47 @@ mod ipc;
 
 use ipc::{IpcClient, IpcEvent};
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
+use tauri::path::BaseDirectory;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
 
 const TRAY_ID: &str = "main-tray";
 const MAIN_WINDOW: &str = "main";
+const WAKE_CHIME_MARKER_FILE: &str = ".wake_chime_bootstrapped";
+const WAKE_CHIME_RESOURCE: &str = "resources/wake_chime.wav";
+
+/// Resolves (bundled chime path, marker path) if the one-time
+/// WAKE_CHIME_PATH override (Project-JARVIS#139's "proof of modularity"
+/// criterion) hasn't happened yet. None if it already has, or if the
+/// bundled resource/app data dir can't be resolved.
+fn pending_wake_chime_bootstrap(app: &AppHandle) -> Option<(String, PathBuf)> {
+    let marker_path = app.path().app_data_dir().ok()?.join(WAKE_CHIME_MARKER_FILE);
+    let resource_path = app
+        .path()
+        .resolve(WAKE_CHIME_RESOURCE, BaseDirectory::Resource)
+        .ok()?;
+    wake_chime_bootstrap_decision(marker_path, resource_path)
+}
+
+/// Pure decision logic split out from `pending_wake_chime_bootstrap` so it's
+/// testable without a running Tauri app / AppHandle.
+fn wake_chime_bootstrap_decision(
+    marker_path: PathBuf,
+    resource_path: PathBuf,
+) -> Option<(String, PathBuf)> {
+    if marker_path.exists() {
+        return None;
+    }
+    if !resource_path.is_file() {
+        return None;
+    }
+    Some((resource_path.to_string_lossy().into_owned(), marker_path))
+}
 
 struct AppState {
     ipc: Arc<Mutex<IpcClient>>,
@@ -178,6 +210,7 @@ pub fn run() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
+            let wake_chime_bootstrap = pending_wake_chime_bootstrap(&handle);
             std::thread::Builder::new()
                 .name("jarvis-ipc-poll".into())
                 .spawn(move || {
@@ -187,6 +220,7 @@ pub fn run() {
                         connected_poll,
                         daemon_state_poll,
                         handle,
+                        wake_chime_bootstrap,
                     )
                 })
                 .expect("failed to spawn IPC poll thread");
@@ -269,6 +303,7 @@ fn poll_loop(
     connected: Arc<AtomicBool>,
     daemon_state: Arc<Mutex<String>>,
     app: AppHandle,
+    mut wake_chime_bootstrap: Option<(String, PathBuf)>,
 ) {
     let set_state = |s: &str| *daemon_state.lock().unwrap() = s.to_string();
 
@@ -283,6 +318,11 @@ fn poll_loop(
                     set_tray_tooltip(&app, "JARVIS -- Connected");
                     let _ = app.emit("ipc-connected", ());
                     let _ = app.emit("ipc-state", "idle");
+                    // Retried on every (re)connect until config_updated
+                    // confirms it -- see the ConfigUpdated/ConfigError arms.
+                    if let Some((path, _)) = &wake_chime_bootstrap {
+                        ipc.lock().unwrap().set_wake_chime_path(path.clone());
+                    }
                 }
                 IpcEvent::Disconnected => {
                     connected.store(false, Ordering::Relaxed);
@@ -318,6 +358,22 @@ fn poll_loop(
                     let _ = app.emit("ipc-confirmation-list", list);
                 }
                 IpcEvent::Ack => {}
+                IpcEvent::ConfigUpdated { key, .. } => {
+                    if key == "WAKE_CHIME_PATH" {
+                        if let Some((_, marker_path)) = wake_chime_bootstrap.take() {
+                            if let Err(e) = std::fs::write(&marker_path, b"1") {
+                                eprintln!("jarvis-ui: failed to write wake chime marker: {e}");
+                            }
+                        }
+                    }
+                }
+                IpcEvent::ConfigError { key, message } => {
+                    if key == "WAKE_CHIME_PATH" {
+                        eprintln!(
+                            "jarvis-ui: daemon rejected default wake chime override: {message}"
+                        );
+                    }
+                }
                 IpcEvent::Error(_) => {}
                 IpcEvent::SessionList(sessions) => {
                     let _ = app.emit("ipc-session-list", sessions);
@@ -334,5 +390,62 @@ fn poll_loop(
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "jarvis-ui-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn pending_when_marker_absent_and_resource_present() {
+        let dir = temp_dir("pending");
+        let marker = dir.join(WAKE_CHIME_MARKER_FILE);
+        let resource = dir.join("wake_chime.wav");
+        fs::write(&resource, b"fake wav bytes").unwrap();
+
+        let result = wake_chime_bootstrap_decision(marker.clone(), resource.clone());
+        assert_eq!(
+            result,
+            Some((resource.to_string_lossy().into_owned(), marker))
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn none_when_marker_already_written() {
+        let dir = temp_dir("already-done");
+        let marker = dir.join(WAKE_CHIME_MARKER_FILE);
+        let resource = dir.join("wake_chime.wav");
+        fs::write(&marker, b"1").unwrap();
+        fs::write(&resource, b"fake wav bytes").unwrap();
+
+        assert_eq!(wake_chime_bootstrap_decision(marker, resource), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn none_when_bundled_resource_is_missing() {
+        let dir = temp_dir("missing-resource");
+        let marker = dir.join(WAKE_CHIME_MARKER_FILE);
+        let resource = dir.join("wake_chime.wav"); // never created
+
+        assert_eq!(wake_chime_bootstrap_decision(marker, resource), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
