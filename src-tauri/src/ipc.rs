@@ -86,10 +86,22 @@ pub enum IpcEvent {
     Connected,
     Disconnected,
     State(String),
-    ResponseChunk { content: String, done: bool },
+    ResponseChunk {
+        content: String,
+        done: bool,
+    },
     WakeWordDetected,
-    ConfirmationRequest { id: String, description: String },
+    ConfirmationRequest {
+        id: String,
+        description: String,
+    },
     Error(String),
+    SessionList(Vec<serde_json::Value>),
+    SessionSwitched {
+        session: serde_json::Value,
+        messages: Vec<serde_json::Value>,
+    },
+    SessionError(String),
 }
 
 #[derive(Debug)]
@@ -99,6 +111,11 @@ pub enum IpcCommand {
     StopListening,
     StopStream,
     ConfirmationResponse { id: String, approved: bool },
+    ListSessions,
+    CreateSession { title: Option<String> },
+    SwitchSession { id: String },
+    RenameSession { id: String, title: String },
+    DeleteSession { id: String },
     Shutdown,
 }
 
@@ -151,6 +168,28 @@ impl IpcClient {
         let _ = self
             .command_tx
             .send(IpcCommand::ConfirmationResponse { id, approved });
+    }
+
+    pub fn list_sessions(&self) {
+        let _ = self.command_tx.send(IpcCommand::ListSessions);
+    }
+
+    pub fn create_session(&self, title: Option<String>) {
+        let _ = self.command_tx.send(IpcCommand::CreateSession { title });
+    }
+
+    pub fn switch_session(&self, id: String) {
+        let _ = self.command_tx.send(IpcCommand::SwitchSession { id });
+    }
+
+    pub fn rename_session(&self, id: String, title: String) {
+        let _ = self
+            .command_tx
+            .send(IpcCommand::RenameSession { id, title });
+    }
+
+    pub fn delete_session(&self, id: String) {
+        let _ = self.command_tx.send(IpcCommand::DeleteSession { id });
     }
 }
 
@@ -268,6 +307,32 @@ fn run_connected(
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
+            Ok(IpcCommand::ListSessions) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"list_sessions"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::CreateSession { title }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"create_session","title":title})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::SwitchSession { id }) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"switch_session","id":id}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::RenameSession { id, title }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"rename_session","id":id,"title":title})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::DeleteSession { id }) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"delete_session","id":id}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
             Ok(IpcCommand::Shutdown) => return,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -314,6 +379,31 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("Unknown error")
+                .to_string(),
+        ),
+        Some("session_list") => IpcEvent::SessionList(
+            value
+                .get("sessions")
+                .and_then(|s| s.as_array())
+                .cloned()
+                .unwrap_or_default(),
+        ),
+        Some("session_switched") => IpcEvent::SessionSwitched {
+            session: value
+                .get("session")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            messages: value
+                .get("messages")
+                .and_then(|m| m.as_array())
+                .cloned()
+                .unwrap_or_default(),
+        },
+        Some("session_error") => IpcEvent::SessionError(
+            value
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown session error")
                 .to_string(),
         ),
         Some("ping") | Some("pong") => IpcEvent::State("idle".into()),

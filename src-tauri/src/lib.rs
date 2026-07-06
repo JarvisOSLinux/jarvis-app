@@ -37,6 +37,12 @@ struct StatusPayload {
     state: String,
 }
 
+#[derive(Serialize, Clone)]
+struct SessionSwitchedPayload {
+    session: serde_json::Value,
+    messages: Vec<serde_json::Value>,
+}
+
 #[tauri::command]
 fn send_message(content: String, state: State<AppState>) {
     if content.trim().is_empty() {
@@ -71,6 +77,31 @@ fn send_confirmation_response(id: String, approved: bool, state: State<AppState>
         .lock()
         .unwrap()
         .confirmation_response(id, approved);
+}
+
+#[tauri::command]
+fn list_sessions(state: State<AppState>) {
+    state.ipc.lock().unwrap().list_sessions();
+}
+
+#[tauri::command]
+fn create_session(title: Option<String>, state: State<AppState>) {
+    state.ipc.lock().unwrap().create_session(title);
+}
+
+#[tauri::command]
+fn switch_session(id: String, state: State<AppState>) {
+    state.ipc.lock().unwrap().switch_session(id);
+}
+
+#[tauri::command]
+fn rename_session(id: String, title: String, state: State<AppState>) {
+    state.ipc.lock().unwrap().rename_session(id, title);
+}
+
+#[tauri::command]
+fn delete_session(id: String, state: State<AppState>) {
+    state.ipc.lock().unwrap().delete_session(id);
 }
 
 // Frontend pulls this once on load to reconcile state in case ipc-connected /
@@ -198,6 +229,11 @@ pub fn run() {
             stop_stream,
             send_confirmation_response,
             get_status,
+            list_sessions,
+            create_session,
+            switch_session,
+            rename_session,
+            delete_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
@@ -255,6 +291,18 @@ fn poll_loop(
                     let _ = app.emit("ipc-confirm", ConfirmPayload { id, description });
                 }
                 IpcEvent::Error(_) => {}
+                IpcEvent::SessionList(sessions) => {
+                    let _ = app.emit("ipc-session-list", sessions);
+                }
+                IpcEvent::SessionSwitched { session, messages } => {
+                    let _ = app.emit(
+                        "ipc-session-switched",
+                        SessionSwitchedPayload { session, messages },
+                    );
+                }
+                IpcEvent::SessionError(message) => {
+                    let _ = app.emit("ipc-session-error", message);
+                }
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
