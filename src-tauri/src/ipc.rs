@@ -60,7 +60,7 @@ pub fn jarvis_data_dir() -> String {
     }
 }
 
-fn socket_path() -> String {
+pub fn socket_path() -> String {
     std::env::var("JARVIS_SOCKET").unwrap_or_else(|_| default_socket_path())
 }
 
@@ -112,6 +112,12 @@ pub enum IpcEvent {
         messages: Vec<serde_json::Value>,
     },
     SessionError(String),
+    Settings {
+        confirmation_mode: String,
+        wake_chime_path: String,
+    },
+    ProviderList(Vec<serde_json::Value>),
+    ProviderError(String),
 }
 
 #[derive(Debug)]
@@ -120,17 +126,56 @@ pub enum IpcCommand {
     StartListening,
     StopListening,
     StopStream,
-    ConfirmationResponse { id: String, approved: bool },
+    ConfirmationResponse {
+        id: String,
+        approved: bool,
+    },
     ListConfirmations,
-    ApproveConfirmation { id: String },
-    DenyConfirmation { id: String },
+    ApproveConfirmation {
+        id: String,
+    },
+    DenyConfirmation {
+        id: String,
+    },
     ApproveAllConfirmations,
-    SetWakeChimePath { path: String },
+    SetWakeChimePath {
+        path: String,
+    },
+    ResetWakeChimePath,
     ListSessions,
-    CreateSession { title: Option<String> },
-    SwitchSession { id: String },
-    RenameSession { id: String, title: String },
-    DeleteSession { id: String },
+    CreateSession {
+        title: Option<String>,
+    },
+    SwitchSession {
+        id: String,
+    },
+    RenameSession {
+        id: String,
+        title: String,
+    },
+    DeleteSession {
+        id: String,
+    },
+    GetSettings,
+    SetConfirmationMode {
+        mode: String,
+    },
+    ListProviders,
+    AddProvider {
+        ptype: String,
+        model: String,
+        name: Option<String>,
+        url: Option<String>,
+        api_key: Option<String>,
+        temperature: Option<f64>,
+    },
+    EditProvider {
+        name: String,
+        fields: serde_json::Value,
+    },
+    RemoveProvider {
+        name: String,
+    },
     Shutdown,
 }
 
@@ -203,6 +248,54 @@ impl IpcClient {
 
     pub fn set_wake_chime_path(&self, path: String) {
         let _ = self.command_tx.send(IpcCommand::SetWakeChimePath { path });
+    }
+
+    pub fn reset_wake_chime_path(&self) {
+        let _ = self.command_tx.send(IpcCommand::ResetWakeChimePath);
+    }
+
+    pub fn get_settings(&self) {
+        let _ = self.command_tx.send(IpcCommand::GetSettings);
+    }
+
+    pub fn set_confirmation_mode(&self, mode: String) {
+        let _ = self
+            .command_tx
+            .send(IpcCommand::SetConfirmationMode { mode });
+    }
+
+    pub fn list_providers(&self) {
+        let _ = self.command_tx.send(IpcCommand::ListProviders);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_provider(
+        &self,
+        ptype: String,
+        model: String,
+        name: Option<String>,
+        url: Option<String>,
+        api_key: Option<String>,
+        temperature: Option<f64>,
+    ) {
+        let _ = self.command_tx.send(IpcCommand::AddProvider {
+            ptype,
+            model,
+            name,
+            url,
+            api_key,
+            temperature,
+        });
+    }
+
+    pub fn edit_provider(&self, name: String, fields: serde_json::Value) {
+        let _ = self
+            .command_tx
+            .send(IpcCommand::EditProvider { name, fields });
+    }
+
+    pub fn remove_provider(&self, name: String) {
+        let _ = self.command_tx.send(IpcCommand::RemoveProvider { name });
     }
 
     pub fn list_sessions(&self) {
@@ -374,6 +467,61 @@ fn run_connected(
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
+            Ok(IpcCommand::ResetWakeChimePath) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"reset_wake_chime_path"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::GetSettings) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"get_settings"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::SetConfirmationMode { mode }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"set_confirmation_mode","mode":mode})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::ListProviders) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"list_providers"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::AddProvider {
+                ptype,
+                model,
+                name,
+                url,
+                api_key,
+                temperature,
+            }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "type": "add_provider",
+                        "ptype": ptype,
+                        "model": model,
+                        "name": name,
+                        "url": url,
+                        "api_key": api_key,
+                        "temperature": temperature,
+                    })
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::EditProvider { name, fields }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"edit_provider","name":name,"fields":fields})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::RemoveProvider { name }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"remove_provider","name":name})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
             Ok(IpcCommand::ListSessions) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"list_sessions"}));
                 let _ = write_stream.write_all(msg.as_bytes());
@@ -509,6 +657,32 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .unwrap_or("Unknown session error")
                 .to_string(),
         ),
+        Some("settings") => IpcEvent::Settings {
+            confirmation_mode: value
+                .get("confirmation_mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("smart")
+                .to_string(),
+            wake_chime_path: value
+                .get("wake_chime_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        },
+        Some("provider_list") => IpcEvent::ProviderList(
+            value
+                .get("providers")
+                .and_then(|p| p.as_array())
+                .cloned()
+                .unwrap_or_default(),
+        ),
+        Some("provider_error") => IpcEvent::ProviderError(
+            value
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown provider error")
+                .to_string(),
+        ),
         Some("ping") | Some("pong") => IpcEvent::State("idle".into()),
         other => IpcEvent::Error(format!("unknown type: {other:?}")),
     }
@@ -519,7 +693,16 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
     use std::os::unix::net::UnixStream as TestUnixStream;
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
+
+    // JARVIS_SOCKET is a process-global env var, but cargo test runs #[test]
+    // functions concurrently on separate threads within the same process --
+    // two real-socket tests mutating it at once race (one test's IpcClient
+    // reads the other's path) and hang forever waiting on a connection that
+    // never arrives. Every test that touches JARVIS_SOCKET must hold this
+    // for its full duration, not just around the set/remove calls.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn unique_sock_path(name: &str) -> String {
         format!(
@@ -559,6 +742,7 @@ mod tests {
     // between this client and jarvis's confirmation-query protocol.
     #[test]
     fn confirmation_commands_round_trip_over_real_socket() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let path = unique_sock_path("confirmations");
         let _ = std::fs::remove_file(&path);
         std::env::set_var("JARVIS_SOCKET", &path);
@@ -660,6 +844,130 @@ mod tests {
                 assert_eq!(key, "WAKE_CHIME_PATH");
                 assert_eq!(message, "not a file: x");
             }
+            _ => unreachable!(),
+        }
+
+        std::env::remove_var("JARVIS_SOCKET");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // Same rationale as confirmation_commands_round_trip_over_real_socket --
+    // proves the settings-panel (jarvisos-app#12) wire format byte-for-byte
+    // against the actual IpcClient background threads.
+    #[test]
+    fn settings_and_provider_commands_round_trip_over_real_socket() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = unique_sock_path("settings");
+        let _ = std::fs::remove_file(&path);
+        std::env::set_var("JARVIS_SOCKET", &path);
+
+        let listener = UnixListener::bind(&path).unwrap();
+        let client = IpcClient::new();
+
+        let (stream, _) = listener.accept().unwrap();
+        let mut write_half = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+
+        wait_for_event(&client, |e| matches!(e, IpcEvent::Connected));
+
+        client.get_settings();
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "get_settings"})
+        );
+
+        write_half
+            .write_all(
+                b"{\"type\":\"settings\",\"confirmation_mode\":\"smart\",\"wake_chime_path\":\"/x.wav\"}\n",
+            )
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::Settings { .. })) {
+            IpcEvent::Settings {
+                confirmation_mode,
+                wake_chime_path,
+            } => {
+                assert_eq!(confirmation_mode, "smart");
+                assert_eq!(wake_chime_path, "/x.wav");
+            }
+            _ => unreachable!(),
+        }
+
+        client.set_confirmation_mode("ask_all".into());
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "set_confirmation_mode", "mode": "ask_all"})
+        );
+
+        client.reset_wake_chime_path();
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "reset_wake_chime_path"})
+        );
+
+        client.list_providers();
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "list_providers"})
+        );
+
+        client.add_provider(
+            "ollama".into(),
+            "qwen3:8b".into(),
+            Some("my-ollama".into()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({
+                "type": "add_provider",
+                "ptype": "ollama",
+                "model": "qwen3:8b",
+                "name": "my-ollama",
+                "url": null,
+                "api_key": null,
+                "temperature": null,
+            })
+        );
+
+        client.edit_provider(
+            "my-ollama".into(),
+            serde_json::json!({"model": "qwen3:14b"}),
+        );
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({
+                "type": "edit_provider",
+                "name": "my-ollama",
+                "fields": {"model": "qwen3:14b"},
+            })
+        );
+
+        client.remove_provider("my-ollama".into());
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "remove_provider", "name": "my-ollama"})
+        );
+
+        write_half
+            .write_all(
+                b"{\"type\":\"provider_list\",\"providers\":[{\"name\":\"my-ollama\",\"type\":\"ollama\"}]}\n",
+            )
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::ProviderList(_))) {
+            IpcEvent::ProviderList(list) => {
+                assert_eq!(list.len(), 1);
+                assert_eq!(list[0]["name"], "my-ollama");
+            }
+            _ => unreachable!(),
+        }
+
+        write_half
+            .write_all(b"{\"type\":\"provider_error\",\"message\":\"boom\"}\n")
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::ProviderError(_))) {
+            IpcEvent::ProviderError(message) => assert_eq!(message, "boom"),
             _ => unreachable!(),
         }
 

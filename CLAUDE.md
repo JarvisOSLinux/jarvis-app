@@ -52,11 +52,15 @@ Override with `JARVIS_SOCKET` env var. Newline-delimited JSON.
                       `stop_stream`, `confirmation_response`, `ping`,
                       `list_sessions`, `create_session`, `switch_session`,
                       `rename_session`, `delete_session`,
-                      `set_wake_chime_path`
+                      `set_wake_chime_path`, `reset_wake_chime_path`,
+                      `get_settings`, `set_confirmation_mode`,
+                      `list_providers`, `add_provider`, `edit_provider`,
+                      `remove_provider`
 **Daemon -> Client**: `state`, `response` (streaming), `wake_word_detected`,
                       `confirmation_request`, `error`, `session_list`,
                       `session_switched`, `session_error`,
-                      `config_updated`, `config_error`
+                      `config_updated`, `config_error`, `settings`,
+                      `provider_list`, `provider_error`
 
 Session CRUD (`Project-JARVIS`'s `jarvis/runtime/io.py`) is a thin wrapper
 over the existing `SessionManager` (`new_session`/`list`/`switch`/`rename`/
@@ -97,6 +101,29 @@ key theoretically exists. Implementation (`lib.rs`):
   ongoing, user-facing surface for changing the wake sound -- this code
   never touches `WAKE_CHIME_PATH` again.
 
+### Settings panel (Project-JARVIS#12)
+
+A centered modal (`#settings-btn` in the header) with two tabs:
+
+- **General** -- voice-activation toggle (an alias for the same
+  `toggle_listening` command the mic button uses), confirmation mode
+  (`smart`/`ask_all`/`allow_all`), wake sound (native file picker via
+  `tauri-plugin-dialog`'s `pick_wake_chime_file`, or "Restore default" via
+  `reset_wake_chime_path`), and a read-only socket path for troubleshooting
+  (`get_connection_info` -- local only, never round-trips to the daemon).
+- **Providers** -- list/add/edit/remove backed by the daemon's
+  `jarvis/core/providers.py` CRUD (shared with the TUI's own config modal).
+  **Provider changes only take effect on the daemon's next restart** -- there
+  is no live `ProviderPool` reload, matching the TUI's own limitation; the
+  panel says so rather than implying an instant effect.
+
+`ConfigUpdated`/`ConfigError` (`ipc.rs`) already existed for the wake-chime
+bootstrap above, but were previously consumed only internally by the poll
+loop -- never forwarded to the frontend. They're now also emitted as
+`ipc-config-updated`/`ipc-config-error` unconditionally, so the settings
+panel can reflect a `CONFIRMATION_MODE` or `WAKE_CHIME_PATH` write from
+*any* source (including another connected client), not just its own.
+
 ### Tauri Command / Event Mapping
 
 | Tauri command (JS → Rust)       | Tauri event (Rust → JS)  |
@@ -109,6 +136,12 @@ key theoretically exists. Implementation (`lib.rs`):
 | `approve_confirmation`          | `ipc-confirm` `{id, tool_names}` |
 | `deny_confirmation`             | `ipc-confirmation-list` `[{id, tool_names, created_at}]` |
 | `approve_all_confirmations`     |                          |
+| `get_settings`                  | `ipc-settings` `{confirmation_mode, wake_chime_path}` |
+| `set_confirmation_mode`         | `ipc-config-updated` `{key, value}` |
+| `reset_wake_chime_path`         | `ipc-config-error` `{key, message}` |
+| `list_providers` / `add_provider` / `edit_provider` / `remove_provider` | `ipc-provider-list` `[{name, type, model, ...}]` |
+| `pick_wake_chime_file` (native file dialog, no daemon round-trip) | `ipc-provider-error` (string) |
+| `get_connection_info` (local socket path, no daemon round-trip) | |
 
 ## Build
 

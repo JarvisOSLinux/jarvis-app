@@ -35,6 +35,38 @@ const approveAllBtn      = document.getElementById('approve-all-btn');
 
 let permissionFlashTimer = null;
 
+const settingsBtn        = document.getElementById('settings-btn');
+const settingsBackdrop   = document.getElementById('settings-backdrop');
+const settingsModal      = document.getElementById('settings-modal');
+const settingsCloseBtn   = document.getElementById('settings-close-btn');
+const settingsTabGeneralBtn   = document.getElementById('settings-tab-general-btn');
+const settingsTabProvidersBtn = document.getElementById('settings-tab-providers-btn');
+const settingsTabGeneral      = document.getElementById('settings-tab-general');
+const settingsTabProviders    = document.getElementById('settings-tab-providers');
+const settingsVoiceToggle     = document.getElementById('settings-voice-toggle');
+const settingsConfirmationMode = document.getElementById('settings-confirmation-mode');
+const settingsWakeChimePath   = document.getElementById('settings-wake-chime-path');
+const settingsChooseChimeBtn  = document.getElementById('settings-choose-chime-btn');
+const settingsResetChimeBtn   = document.getElementById('settings-reset-chime-btn');
+const settingsSocketPath      = document.getElementById('settings-socket-path');
+const settingsError           = document.getElementById('settings-error');
+
+const providerList          = document.getElementById('provider-list');
+const settingsAddProviderBtn = document.getElementById('settings-add-provider-btn');
+const providerForm           = document.getElementById('provider-form');
+const providerFormType        = document.getElementById('provider-form-type');
+const providerFormModel       = document.getElementById('provider-form-model');
+const providerFormName        = document.getElementById('provider-form-name');
+const providerFormUrl         = document.getElementById('provider-form-url');
+const providerFormTemperature = document.getElementById('provider-form-temperature');
+const providerFormKey         = document.getElementById('provider-form-key');
+const providerFormError       = document.getElementById('provider-form-error');
+const providerFormCancelBtn   = document.getElementById('provider-form-cancel-btn');
+const providerFormSaveBtn     = document.getElementById('provider-form-save-btn');
+
+let cachedProviders = [];
+let editingProviderName = null;
+
 // ── Status ─────────────────────────────────────────────────────────────────
 // woken/capturing come from the daemon's formal voice state machine
 // (Project-JARVIS#141) -- both render like the existing "listening" state
@@ -73,6 +105,7 @@ function setStatus(state) {
 
     isListening = LISTENING_LIKE_STATES.has(state);
     micBtn.classList.toggle('listening', isListening);
+    renderSettingsVoiceToggle();
 }
 
 function setConnected(connected) {
@@ -82,6 +115,7 @@ function setConnected(connected) {
     if (!connected) {
         micBtn.classList.remove('listening');
         isListening = false;
+        renderSettingsVoiceToggle();
     }
     refreshSendBtn();
 }
@@ -417,6 +451,186 @@ async function approveAllConfirmations() {
     await invoke('list_confirmations');
 }
 
+// ── Settings ───────────────────────────────────────────────────────────────
+function clearSettingsError() {
+    settingsError.textContent = '';
+    settingsError.classList.remove('visible');
+}
+
+function showSettingsError(message) {
+    settingsError.textContent = message;
+    settingsError.classList.add('visible');
+}
+
+function switchSettingsTab(tab) {
+    const isGeneral = tab === 'general';
+    settingsTabGeneralBtn.classList.toggle('active', isGeneral);
+    settingsTabProvidersBtn.classList.toggle('active', !isGeneral);
+    settingsTabGeneral.classList.toggle('active', isGeneral);
+    settingsTabProviders.classList.toggle('active', !isGeneral);
+}
+
+function renderSettingsVoiceToggle() {
+    settingsVoiceToggle.textContent = isListening ? 'Enabled' : 'Disabled';
+    settingsVoiceToggle.classList.toggle('disabled', !isListening);
+}
+
+async function openSettingsModal() {
+    settingsModal.classList.add('visible');
+    settingsBackdrop.classList.add('visible');
+    clearSettingsError();
+    switchSettingsTab('general');
+    renderSettingsVoiceToggle();
+    await invoke('get_settings');
+    await invoke('list_providers');
+    settingsSocketPath.textContent = await invoke('get_connection_info');
+}
+
+function closeSettingsModal() {
+    settingsModal.classList.remove('visible');
+    settingsBackdrop.classList.remove('visible');
+    closeProviderForm();
+}
+
+function toggleSettingsModal() {
+    settingsModal.classList.contains('visible') ? closeSettingsModal() : openSettingsModal();
+}
+
+function applySettings(settings) {
+    settingsConfirmationMode.value = settings.confirmation_mode;
+    settingsWakeChimePath.textContent = settings.wake_chime_path;
+}
+
+async function chooseWakeChimeFile() {
+    const path = await invoke('pick_wake_chime_file');
+    if (!path) return; // user cancelled the native picker
+    clearSettingsError();
+    await invoke('set_wake_chime_path', { path });
+}
+
+// ── Providers ──────────────────────────────────────────────────────────────
+function providerLabel(p) {
+    const temp = p.temperature != null ? `, temp ${p.temperature}` : '';
+    return `${p.type}/${p.model}${temp}`;
+}
+
+function buildProviderItem(p) {
+    const el = document.createElement('div');
+    el.className = 'provider-item';
+
+    const main = document.createElement('div');
+    main.className = 'provider-item-main';
+    const name = document.createElement('div');
+    name.className = 'provider-item-name';
+    name.textContent = p.name || '(unnamed)';
+    const meta = document.createElement('div');
+    meta.className = 'provider-item-meta';
+    meta.textContent = providerLabel(p);
+    main.append(name, meta);
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'provider-item-action';
+    editBtn.title = 'Edit';
+    editBtn.textContent = '✎';
+    editBtn.addEventListener('click', () => openProviderForm(p));
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'provider-item-action';
+    removeBtn.title = 'Remove';
+    removeBtn.textContent = '×';
+    removeBtn.addEventListener('click', () => removeProvider(p.name));
+
+    const actions = document.createElement('div');
+    actions.className = 'provider-item-actions';
+    actions.append(editBtn, removeBtn);
+
+    el.append(main, actions);
+    return el;
+}
+
+function renderProviderList(providers) {
+    cachedProviders = providers;
+    providerList.innerHTML = '';
+    if (!providers.length) {
+        const empty = document.createElement('div');
+        empty.className = 'provider-empty';
+        empty.textContent = 'No providers configured.';
+        providerList.append(empty);
+        return;
+    }
+    for (const p of providers) providerList.append(buildProviderItem(p));
+}
+
+function openProviderForm(existing) {
+    editingProviderName = existing ? existing.name : null;
+    providerFormError.textContent = '';
+    providerFormError.classList.remove('visible');
+    providerFormType.value = existing?.type || 'ollama';
+    providerFormModel.value = existing?.model || '';
+    providerFormName.value = existing?.name || '';
+    providerFormUrl.value = existing?.url || '';
+    providerFormTemperature.value = existing?.temperature ?? '';
+    providerFormKey.value = '';
+    providerFormSaveBtn.textContent = existing ? 'Save' : 'Add';
+    providerForm.classList.remove('hidden');
+    settingsAddProviderBtn.classList.add('hidden');
+}
+
+function closeProviderForm() {
+    editingProviderName = null;
+    providerForm.classList.add('hidden');
+    settingsAddProviderBtn.classList.remove('hidden');
+}
+
+function showProviderFormError(message) {
+    providerFormError.textContent = message;
+    providerFormError.classList.add('visible');
+}
+
+async function saveProviderForm() {
+    const model = providerFormModel.value.trim();
+    if (!model) return showProviderFormError('Model is required.');
+
+    const ptype = providerFormType.value;
+    const apiKey = providerFormKey.value.trim();
+    if (ptype === 'api' && !apiKey && !editingProviderName) {
+        return showProviderFormError('API key is required for cloud providers.');
+    }
+
+    let temperature = null;
+    const tempStr = providerFormTemperature.value.trim();
+    if (tempStr) {
+        temperature = Number(tempStr);
+        if (Number.isNaN(temperature) || temperature < 0 || temperature > 2) {
+            return showProviderFormError('Temperature must be a number between 0.0 and 2.0.');
+        }
+    }
+
+    const url = providerFormUrl.value.trim();
+    const name = providerFormName.value.trim();
+
+    if (editingProviderName) {
+        const fields = { model, type: ptype };
+        if (url) fields.url = url;
+        if (apiKey) fields.key = apiKey;
+        if (temperature !== null) fields.temperature = temperature;
+        await invoke('edit_provider', { name: editingProviderName, fields });
+    } else {
+        await invoke('add_provider', {
+            ptype,
+            model,
+            name: name || null,
+            url: url || null,
+            apiKey: apiKey || null,
+            temperature,
+        });
+    }
+}
+
+async function removeProvider(name) {
+    await invoke('remove_provider', { name });
+}
+
 // ── Actions ────────────────────────────────────────────────────────────────
 async function sendMessage() {
     const text = messageInput.value.trim();
@@ -452,6 +666,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     permissionBackdrop.addEventListener('click', closePermissionPanel);
     approveAllBtn.addEventListener('click', approveAllConfirmations);
 
+    settingsBtn.addEventListener('click', toggleSettingsModal);
+    settingsBackdrop.addEventListener('click', closeSettingsModal);
+    settingsCloseBtn.addEventListener('click', closeSettingsModal);
+    settingsTabGeneralBtn.addEventListener('click', () => switchSettingsTab('general'));
+    settingsTabProvidersBtn.addEventListener('click', () => switchSettingsTab('providers'));
+    settingsVoiceToggle.addEventListener('click', toggleListening);
+    settingsConfirmationMode.addEventListener('change', () => {
+        clearSettingsError();
+        invoke('set_confirmation_mode', { mode: settingsConfirmationMode.value });
+    });
+    settingsChooseChimeBtn.addEventListener('click', chooseWakeChimeFile);
+    settingsResetChimeBtn.addEventListener('click', () => {
+        clearSettingsError();
+        invoke('reset_wake_chime_path');
+    });
+    settingsAddProviderBtn.addEventListener('click', () => openProviderForm(null));
+    providerFormCancelBtn.addEventListener('click', closeProviderForm);
+    providerFormSaveBtn.addEventListener('click', saveProviderForm);
+
     // IPC events from Rust backend
     await listen('ipc-connected',    ()      => { setConnected(true); invoke('list_sessions'); invoke('list_confirmations'); });
     await listen('ipc-disconnected', ()      => { setConnected(false); setStatus('offline'); });
@@ -479,6 +712,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         invoke('list_sessions');
     });
     await listen('ipc-session-error', (e) => window.alert('Session error: ' + e.payload));
+    await listen('ipc-settings', (e) => applySettings(e.payload));
+    await listen('ipc-provider-list', (e) => {
+        renderProviderList(e.payload);
+        closeProviderForm(); // a refreshed list means the pending add/edit/remove succeeded
+    });
+    await listen('ipc-provider-error', (e) => showProviderFormError(e.payload));
+    await listen('ipc-config-updated', (e) => {
+        if (e.payload.key === 'CONFIRMATION_MODE' || e.payload.key === 'WAKE_CHIME_PATH') {
+            clearSettingsError();
+            invoke('get_settings');
+        }
+    });
+    await listen('ipc-config-error', (e) => {
+        if (e.payload.key === 'CONFIRMATION_MODE' || e.payload.key === 'WAKE_CHIME_PATH') {
+            showSettingsError(e.payload.message);
+        }
+    });
 
     // Listeners are now registered, but the backend's IPC poll thread may have
     // already emitted ipc-connected/ipc-state before this point (Tauri does not
