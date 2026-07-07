@@ -75,6 +75,24 @@ struct SessionSwitchedPayload {
     messages: Vec<serde_json::Value>,
 }
 
+#[derive(Serialize, Clone)]
+struct SettingsPayload {
+    confirmation_mode: String,
+    wake_chime_path: String,
+}
+
+#[derive(Serialize, Clone)]
+struct ConfigUpdatedPayload {
+    key: String,
+    value: String,
+}
+
+#[derive(Serialize, Clone)]
+struct ConfigErrorPayload {
+    key: String,
+    message: String,
+}
+
 #[tauri::command]
 fn send_message(content: String, state: State<AppState>) {
     if content.trim().is_empty() {
@@ -156,6 +174,75 @@ fn delete_session(id: String, state: State<AppState>) {
     state.ipc.lock().unwrap().delete_session(id);
 }
 
+#[tauri::command]
+fn get_settings(state: State<AppState>) {
+    state.ipc.lock().unwrap().get_settings();
+}
+
+// Read-only troubleshooting info for the settings panel's General tab --
+// the socket path itself, not a live setting, so it doesn't round-trip
+// through the daemon.
+#[tauri::command]
+fn get_connection_info() -> String {
+    ipc::socket_path()
+}
+
+#[tauri::command]
+fn set_confirmation_mode(mode: String, state: State<AppState>) {
+    state.ipc.lock().unwrap().set_confirmation_mode(mode);
+}
+
+#[tauri::command]
+fn reset_wake_chime_path(state: State<AppState>) {
+    state.ipc.lock().unwrap().reset_wake_chime_path();
+}
+
+#[tauri::command]
+fn list_providers(state: State<AppState>) {
+    state.ipc.lock().unwrap().list_providers();
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn add_provider(
+    ptype: String,
+    model: String,
+    name: Option<String>,
+    url: Option<String>,
+    api_key: Option<String>,
+    temperature: Option<f64>,
+    state: State<AppState>,
+) {
+    state
+        .ipc
+        .lock()
+        .unwrap()
+        .add_provider(ptype, model, name, url, api_key, temperature);
+}
+
+#[tauri::command]
+fn edit_provider(name: String, fields: serde_json::Value, state: State<AppState>) {
+    state.ipc.lock().unwrap().edit_provider(name, fields);
+}
+
+#[tauri::command]
+fn remove_provider(name: String, state: State<AppState>) {
+    state.ipc.lock().unwrap().remove_provider(name);
+}
+
+#[tauri::command]
+async fn pick_wake_chime_file(app: AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .add_filter("WAV audio", &["wav"])
+        .pick_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+    rx.recv().ok().flatten().map(|p| p.to_string())
+}
+
 // Frontend pulls this once on load to reconcile state in case ipc-connected /
 // ipc-state fired (from the backend's IPC poll thread, started in setup())
 // before the webview finished loading and registering its event listeners --
@@ -202,6 +289,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             ipc,
             is_listening,
@@ -292,6 +380,15 @@ pub fn run() {
             switch_session,
             rename_session,
             delete_session,
+            get_settings,
+            get_connection_info,
+            set_confirmation_mode,
+            reset_wake_chime_path,
+            list_providers,
+            add_provider,
+            edit_provider,
+            remove_provider,
+            pick_wake_chime_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
@@ -358,7 +455,7 @@ fn poll_loop(
                     let _ = app.emit("ipc-confirmation-list", list);
                 }
                 IpcEvent::Ack => {}
-                IpcEvent::ConfigUpdated { key, .. } => {
+                IpcEvent::ConfigUpdated { key, value } => {
                     if key == "WAKE_CHIME_PATH" {
                         if let Some((_, marker_path)) = wake_chime_bootstrap.take() {
                             if let Err(e) = std::fs::write(&marker_path, b"1") {
@@ -366,13 +463,20 @@ fn poll_loop(
                             }
                         }
                     }
+                    // Beyond the one-time bootstrap side effect above, every
+                    // config_updated is also forwarded to the frontend so the
+                    // settings panel (jarvisos-app#12) can reflect writes it
+                    // didn't itself just make (e.g. another connected client
+                    // changing CONFIRMATION_MODE).
+                    let _ = app.emit("ipc-config-updated", ConfigUpdatedPayload { key, value });
                 }
                 IpcEvent::ConfigError { key, message } => {
-                    if key == "WAKE_CHIME_PATH" {
+                    if key == "WAKE_CHIME_PATH" && wake_chime_bootstrap.is_some() {
                         eprintln!(
                             "jarvis-ui: daemon rejected default wake chime override: {message}"
                         );
                     }
+                    let _ = app.emit("ipc-config-error", ConfigErrorPayload { key, message });
                 }
                 IpcEvent::Error(_) => {}
                 IpcEvent::SessionList(sessions) => {
@@ -386,6 +490,24 @@ fn poll_loop(
                 }
                 IpcEvent::SessionError(message) => {
                     let _ = app.emit("ipc-session-error", message);
+                }
+                IpcEvent::Settings {
+                    confirmation_mode,
+                    wake_chime_path,
+                } => {
+                    let _ = app.emit(
+                        "ipc-settings",
+                        SettingsPayload {
+                            confirmation_mode,
+                            wake_chime_path,
+                        },
+                    );
+                }
+                IpcEvent::ProviderList(providers) => {
+                    let _ = app.emit("ipc-provider-list", providers);
+                }
+                IpcEvent::ProviderError(message) => {
+                    let _ = app.emit("ipc-provider-error", message);
                 }
             }
         }
