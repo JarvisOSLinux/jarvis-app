@@ -55,12 +55,13 @@ Override with `JARVIS_SOCKET` env var. Newline-delimited JSON.
                       `set_wake_chime_path`, `reset_wake_chime_path`,
                       `get_settings`, `set_confirmation_mode`,
                       `list_providers`, `add_provider`, `edit_provider`,
-                      `remove_provider`
+                      `remove_provider`, `list_clients`, `shutdown_request`
 **Daemon -> Client**: `state`, `response` (streaming), `wake_word_detected`,
                       `confirmation_request`, `error`, `session_list`,
                       `session_switched`, `session_error`,
                       `config_updated`, `config_error`, `settings`,
-                      `provider_list`, `provider_error`
+                      `provider_list`, `provider_error`, `client_list`,
+                      `DAEMON_SHUTDOWN`
 
 Session CRUD (`Project-JARVIS`'s `jarvis/runtime/io.py`) is a thin wrapper
 over the existing `SessionManager` (`new_session`/`list`/`switch`/`rename`/
@@ -124,6 +125,44 @@ loop -- never forwarded to the frontend. They're now also emitted as
 panel can reflect a `CONFIRMATION_MODE` or `WAKE_CHIME_PATH` write from
 *any* source (including another connected client), not just its own.
 
+### Graceful daemon shutdown (Project-JARVIS#146 / jarvisos-app#17)
+
+Three entry points converge on the same confirmation modal (`#shutdown-modal`
+in `index.html`): the settings panel's General tab ("Shut Down JARVIS..."),
+the tray menu item of the same name (emits `ipc-open-shutdown-modal`, shown
+via `show_main_window()` first since the window may be hidden), and
+(implicitly) any future quit-sequence hook. None of them send
+`shutdown_request` directly:
+
+1. Opening the modal immediately calls `list_clients` and shows a loading
+   placeholder until `client_list` replies -- the user always sees who else
+   is currently attached before being asked to confirm.
+2. Only the modal's own "Shut Down" button sends `request_daemon_shutdown`.
+   Cancelling (or clicking the backdrop) never contacts the daemon at all.
+   There is no daemon-enforced confirmation gate on `shutdown_request` itself
+   (`Project-JARVIS`#146's own design) -- this modal *is* the client-side
+   check the protocol expects every well-behaved client to do.
+3. `DAEMON_SHUTDOWN` (from this client's own request *or* another client's)
+   closes the modal if it's open, appends a system-message line into the
+   current chat ("JARVIS shut down at HH:MM. Last state: ...") as a
+   lightweight, client-local stand-in for "recorded into session history"
+   (no round-trip write to a daemon that's already tearing itself down), and
+   proactively runs the same `setConnected(false)`/`setStatus('offline')`
+   treatment `ipc-disconnected` uses -- the real disconnect follows moments
+   later regardless, this just avoids a lag between the two.
+4. **Self-quit on shutdown is opt-in** (`#settings-quit-on-shutdown`
+   checkbox, off by default), persisted to a small local
+   `app_data_dir()/local_settings.json` (`get_quit_on_daemon_shutdown` /
+   `set_quit_on_daemon_shutdown`) -- deliberately separate from the daemon's
+   own settings surface above, since this is a jarvis-app-only preference
+   that means nothing to any other connected client.
+
+**Scoped out of this pass**: the issue's "if jarvis-app spawned the daemon
+itself" criterion. jarvis-app has no daemon-spawning code at all today --
+it only ever connects to an existing socket -- so there is no "if" case to
+handle yet; that's a separate, substantial feature (finding/launching the
+`jarvis` binary, tracking its lifecycle) left for a future pass.
+
 ### Tauri Command / Event Mapping
 
 | Tauri command (JS → Rust)       | Tauri event (Rust → JS)  |
@@ -142,6 +181,9 @@ panel can reflect a `CONFIRMATION_MODE` or `WAKE_CHIME_PATH` write from
 | `list_providers` / `add_provider` / `edit_provider` / `remove_provider` | `ipc-provider-list` `[{name, type, model, ...}]` |
 | `pick_wake_chime_file` (native file dialog, no daemon round-trip) | `ipc-provider-error` (string) |
 | `get_connection_info` (local socket path, no daemon round-trip) | |
+| `list_clients` / `request_daemon_shutdown` | `ipc-client-list` `[label, ...]` |
+| `get_quit_on_daemon_shutdown` / `set_quit_on_daemon_shutdown` (local file, no daemon round-trip) | `ipc-daemon-shutdown` `{state, goals, session_id, timestamp}` |
+| | `ipc-open-shutdown-modal` (tray menu entry point, no payload) |
 
 ## Build
 

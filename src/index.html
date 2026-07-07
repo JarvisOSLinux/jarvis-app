@@ -85,6 +85,17 @@
                 <div id="settings-socket-path" class="settings-value settings-value-mono"></div>
             </div>
 
+            <div class="settings-section">
+                <label class="settings-label">Daemon</label>
+                <div class="settings-row settings-row-spread">
+                    <label class="settings-checkbox-label" for="settings-quit-on-shutdown">
+                        Quit this app when JARVIS shuts down
+                    </label>
+                    <input type="checkbox" id="settings-quit-on-shutdown">
+                </div>
+                <button id="settings-shutdown-btn" class="settings-danger-btn">Shut Down JARVIS&hellip;</button>
+            </div>
+
             <div id="settings-error" class="settings-error"></div>
         </div>
 
@@ -122,6 +133,22 @@
                     <button id="provider-form-save-btn" class="settings-primary-btn">Save</button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div id="shutdown-backdrop"></div>
+    <div id="shutdown-modal">
+        <div id="shutdown-modal-header">
+            <span>Shut Down JARVIS?</span>
+        </div>
+        <div id="shutdown-modal-body">
+            <p>This shuts down the JARVIS daemon for every connected client, not just this app.</p>
+            <label class="settings-label">Currently connected</label>
+            <div id="shutdown-client-list">Loading&hellip;</div>
+        </div>
+        <div class="settings-row">
+            <button id="shutdown-cancel-btn">Cancel</button>
+            <button id="shutdown-confirm-btn" class="settings-danger-btn">Shut Down</button>
         </div>
     </div>
 
