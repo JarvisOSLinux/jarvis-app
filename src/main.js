@@ -49,7 +49,15 @@ const settingsWakeChimePath   = document.getElementById('settings-wake-chime-pat
 const settingsChooseChimeBtn  = document.getElementById('settings-choose-chime-btn');
 const settingsResetChimeBtn   = document.getElementById('settings-reset-chime-btn');
 const settingsSocketPath      = document.getElementById('settings-socket-path');
+const settingsQuitOnShutdown  = document.getElementById('settings-quit-on-shutdown');
+const settingsShutdownBtn     = document.getElementById('settings-shutdown-btn');
 const settingsError           = document.getElementById('settings-error');
+
+const shutdownBackdrop  = document.getElementById('shutdown-backdrop');
+const shutdownModal     = document.getElementById('shutdown-modal');
+const shutdownClientList = document.getElementById('shutdown-client-list');
+const shutdownCancelBtn  = document.getElementById('shutdown-cancel-btn');
+const shutdownConfirmBtn = document.getElementById('shutdown-confirm-btn');
 
 const providerList          = document.getElementById('provider-list');
 const settingsAddProviderBtn = document.getElementById('settings-add-provider-btn');
@@ -205,6 +213,19 @@ function appendJarvisChunk(content, done) {
 
 function scrollBottom() {
     requestAnimationFrame(() => { chatView.scrollTop = chatView.scrollHeight; });
+}
+
+// A lightweight, chat-local annotation for events with no daemon reply of
+// their own (e.g. a DAEMON_SHUTDOWN notice) -- "recorded into session
+// history" in spirit, without needing a round-trip write to a daemon that's
+// already tearing itself down (Project-JARVIS#146 / jarvisos-app#17).
+function addSystemMessage(text) {
+    showMessages();
+    const el = document.createElement('div');
+    el.className = 'system-message';
+    el.textContent = text;
+    messages.append(el);
+    scrollBottom();
 }
 
 // ── Sessions ───────────────────────────────────────────────────────────────
@@ -484,6 +505,7 @@ async function openSettingsModal() {
     await invoke('get_settings');
     await invoke('list_providers');
     settingsSocketPath.textContent = await invoke('get_connection_info');
+    settingsQuitOnShutdown.checked = await invoke('get_quit_on_daemon_shutdown');
 }
 
 function closeSettingsModal() {
@@ -631,6 +653,63 @@ async function removeProvider(name) {
     await invoke('remove_provider', { name });
 }
 
+// ── Daemon shutdown (Project-JARVIS#146 / jarvisos-app#17) ──────────────────
+async function openShutdownModal() {
+    shutdownClientList.innerHTML = 'Loading&hellip;';
+    shutdownModal.classList.add('visible');
+    shutdownBackdrop.classList.add('visible');
+    await invoke('list_clients');
+}
+
+function closeShutdownModal() {
+    shutdownModal.classList.remove('visible');
+    shutdownBackdrop.classList.remove('visible');
+}
+
+function renderShutdownClientList(clients) {
+    shutdownClientList.innerHTML = '';
+    if (!clients.length) {
+        const empty = document.createElement('div');
+        empty.className = 'shutdown-client-item';
+        empty.textContent = 'No other clients connected.';
+        shutdownClientList.append(empty);
+        return;
+    }
+    for (const label of clients) {
+        const item = document.createElement('div');
+        item.className = 'shutdown-client-item';
+        item.textContent = label;
+        shutdownClientList.append(item);
+    }
+}
+
+async function confirmShutdown() {
+    closeShutdownModal();
+    await invoke('request_daemon_shutdown');
+}
+
+function formatShutdownTimestamp(epochSeconds) {
+    if (!epochSeconds) return '';
+    const d = new Date(epochSeconds * 1000);
+    return Number.isNaN(d.getTime())
+        ? ''
+        : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function handleDaemonShutdown(payload) {
+    closeShutdownModal();
+    const when = formatShutdownTimestamp(payload.timestamp);
+    addSystemMessage(
+        `JARVIS shut down${when ? ' at ' + when : ''}. Last state: ${payload.state}.`
+    );
+    // Reuses the same disconnected treatment ipc-disconnected drives --
+    // the daemon is already tearing its sockets down, so the real
+    // disconnect will follow within moments regardless; this just makes
+    // the UI reflect it immediately instead of lagging behind.
+    setConnected(false);
+    setStatus('offline');
+}
+
 // ── Actions ────────────────────────────────────────────────────────────────
 async function sendMessage() {
     const text = messageInput.value.trim();
@@ -685,6 +764,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     providerFormCancelBtn.addEventListener('click', closeProviderForm);
     providerFormSaveBtn.addEventListener('click', saveProviderForm);
 
+    settingsShutdownBtn.addEventListener('click', openShutdownModal);
+    shutdownBackdrop.addEventListener('click', closeShutdownModal);
+    shutdownCancelBtn.addEventListener('click', closeShutdownModal);
+    shutdownConfirmBtn.addEventListener('click', confirmShutdown);
+    settingsQuitOnShutdown.addEventListener('change', () => {
+        invoke('set_quit_on_daemon_shutdown', { enabled: settingsQuitOnShutdown.checked });
+    });
+
     // IPC events from Rust backend
     await listen('ipc-connected',    ()      => { setConnected(true); invoke('list_sessions'); invoke('list_confirmations'); });
     await listen('ipc-disconnected', ()      => { setConnected(false); setStatus('offline'); });
@@ -718,6 +805,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         closeProviderForm(); // a refreshed list means the pending add/edit/remove succeeded
     });
     await listen('ipc-provider-error', (e) => showProviderFormError(e.payload));
+    await listen('ipc-client-list', (e) => renderShutdownClientList(e.payload));
+    await listen('ipc-daemon-shutdown', (e) => handleDaemonShutdown(e.payload));
+    await listen('ipc-open-shutdown-modal', openShutdownModal); // tray menu entry point
     await listen('ipc-config-updated', (e) => {
         if (e.payload.key === 'CONFIRMATION_MODE' || e.payload.key === 'WAKE_CHIME_PATH') {
             clearSettingsError();

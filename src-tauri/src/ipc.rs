@@ -118,6 +118,13 @@ pub enum IpcEvent {
     },
     ProviderList(Vec<serde_json::Value>),
     ProviderError(String),
+    ClientList(Vec<String>),
+    DaemonShutdown {
+        state: String,
+        goals: Vec<serde_json::Value>,
+        session_id: Option<String>,
+        timestamp: f64,
+    },
 }
 
 #[derive(Debug)]
@@ -176,6 +183,8 @@ pub enum IpcCommand {
     RemoveProvider {
         name: String,
     },
+    ListClients,
+    RequestDaemonShutdown,
     Shutdown,
 }
 
@@ -296,6 +305,14 @@ impl IpcClient {
 
     pub fn remove_provider(&self, name: String) {
         let _ = self.command_tx.send(IpcCommand::RemoveProvider { name });
+    }
+
+    pub fn list_clients(&self) {
+        let _ = self.command_tx.send(IpcCommand::ListClients);
+    }
+
+    pub fn request_daemon_shutdown(&self) {
+        let _ = self.command_tx.send(IpcCommand::RequestDaemonShutdown);
     }
 
     pub fn list_sessions(&self) {
@@ -522,6 +539,14 @@ fn run_connected(
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
+            Ok(IpcCommand::ListClients) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"list_clients"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::RequestDaemonShutdown) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"shutdown_request"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
             Ok(IpcCommand::ListSessions) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"list_sessions"}));
                 let _ = write_stream.write_all(msg.as_bytes());
@@ -683,6 +708,37 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .unwrap_or("Unknown provider error")
                 .to_string(),
         ),
+        Some("client_list") => IpcEvent::ClientList(
+            value
+                .get("clients")
+                .and_then(|c| c.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| c.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ),
+        Some("DAEMON_SHUTDOWN") => IpcEvent::DaemonShutdown {
+            state: value
+                .get("state")
+                .and_then(|s| s.as_str())
+                .unwrap_or("idle")
+                .to_string(),
+            goals: value
+                .get("goals")
+                .and_then(|g| g.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            session_id: value
+                .get("session_id")
+                .and_then(|s| s.as_str())
+                .map(String::from),
+            timestamp: value
+                .get("timestamp")
+                .and_then(|t| t.as_f64())
+                .unwrap_or(0.0),
+        },
         Some("ping") | Some("pong") => IpcEvent::State("idle".into()),
         other => IpcEvent::Error(format!("unknown type: {other:?}")),
     }
@@ -968,6 +1024,72 @@ mod tests {
             .unwrap();
         match wait_for_event(&client, |e| matches!(e, IpcEvent::ProviderError(_))) {
             IpcEvent::ProviderError(message) => assert_eq!(message, "boom"),
+            _ => unreachable!(),
+        }
+
+        std::env::remove_var("JARVIS_SOCKET");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // Same rationale as the two tests above -- proves jarvisos-app#17's
+    // list_clients/shutdown_request/DAEMON_SHUTDOWN wire format against the
+    // real IpcClient background threads, not a reimplementation.
+    #[test]
+    fn shutdown_protocol_round_trips_over_real_socket() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = unique_sock_path("shutdown");
+        let _ = std::fs::remove_file(&path);
+        std::env::set_var("JARVIS_SOCKET", &path);
+
+        let listener = UnixListener::bind(&path).unwrap();
+        let client = IpcClient::new();
+
+        let (stream, _) = listener.accept().unwrap();
+        let mut write_half = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+
+        wait_for_event(&client, |e| matches!(e, IpcEvent::Connected));
+
+        client.list_clients();
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "list_clients"})
+        );
+
+        write_half
+            .write_all(b"{\"type\":\"client_list\",\"clients\":[\"jarvis-app\",\"TUI\"]}\n")
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::ClientList(_))) {
+            IpcEvent::ClientList(clients) => {
+                assert_eq!(clients, vec!["jarvis-app".to_string(), "TUI".to_string()])
+            }
+            _ => unreachable!(),
+        }
+
+        client.request_daemon_shutdown();
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "shutdown_request"})
+        );
+
+        write_half
+            .write_all(
+                b"{\"type\":\"DAEMON_SHUTDOWN\",\"state\":\"idle\",\"goals\":[],\
+                   \"session_id\":\"sess-1\",\"timestamp\":1700000000.5}\n",
+            )
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::DaemonShutdown { .. })) {
+            IpcEvent::DaemonShutdown {
+                state,
+                goals,
+                session_id,
+                timestamp,
+            } => {
+                assert_eq!(state, "idle");
+                assert!(goals.is_empty());
+                assert_eq!(session_id, Some("sess-1".to_string()));
+                assert_eq!(timestamp, 1700000000.5);
+            }
             _ => unreachable!(),
         }
 

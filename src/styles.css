@@ -603,6 +603,27 @@ body {
     background: rgba(0, 200, 255, 0.18) !important;
 }
 
+.settings-danger-btn {
+    border-color: #7a2530 !important;
+    background: rgba(255, 68, 85, 0.10) !important;
+    color: #ff4455 !important;
+}
+
+.settings-danger-btn:hover { background: rgba(255, 68, 85, 0.20) !important; }
+
+.settings-checkbox-label {
+    font-size: 12px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+#settings-modal input[type="checkbox"] {
+    width: auto;
+    flex-shrink: 0;
+    accent-color: var(--primary);
+    cursor: pointer;
+}
+
 #settings-voice-toggle {
     flex: none !important;
     padding: 6px 14px !important;
@@ -688,6 +709,114 @@ body {
 }
 
 .hidden { display: none !important; }
+
+/* ── Shutdown confirmation ── */
+#shutdown-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+    z-index: 40;
+}
+
+#shutdown-backdrop.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+#shutdown-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.96);
+    width: 360px;
+    max-width: 88vw;
+    background: var(--surface);
+    border: 1px solid #7a2530;
+    border-radius: 14px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    z-index: 41;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+}
+
+#shutdown-modal.visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, -50%) scale(1);
+}
+
+#shutdown-modal-header {
+    height: 52px;
+    display: flex;
+    align-items: center;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--border);
+    color: #ff4455;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+}
+
+#shutdown-modal-body {
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#shutdown-modal-body p {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+#shutdown-client-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.shutdown-client-item {
+    padding: 6px 10px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+}
+
+#shutdown-modal .settings-row {
+    padding: 0 18px 16px;
+}
+
+#shutdown-modal button:not(.icon-btn) {
+    flex: 1;
+    padding: 8px 0;
+    border-radius: 8px;
+    border: 1px solid var(--primary-dim);
+    background: rgba(0, 200, 255, 0.10);
+    color: var(--primary);
+    font-size: 12px;
+    letter-spacing: 0.3px;
+    cursor: pointer;
+}
+
+#shutdown-modal button:not(.icon-btn):hover { background: rgba(0, 200, 255, 0.20); }
+
+/* ── System messages (e.g. daemon shutdown notice) ── */
+.system-message {
+    text-align: center;
+    padding: 8px 16px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-style: italic;
+}
 
 /* ── Chat view ── */
 #chat-view {

@@ -15,6 +15,42 @@ const TRAY_ID: &str = "main-tray";
 const MAIN_WINDOW: &str = "main";
 const WAKE_CHIME_MARKER_FILE: &str = ".wake_chime_bootstrapped";
 const WAKE_CHIME_RESOURCE: &str = "resources/wake_chime.wav";
+const LOCAL_SETTINGS_FILE: &str = "local_settings.json";
+
+/// Purely local, jarvis-app-only settings -- never round-trip to the daemon.
+/// Distinct from Project-JARVIS's own settings (confirmation mode, wake
+/// chime, providers), which live on the daemon and are shared across every
+/// connected client.
+#[derive(Serialize, serde::Deserialize, Default)]
+struct LocalSettings {
+    /// Project-JARVIS#146 / jarvisos-app#17: self-quit when the daemon
+    /// broadcasts DAEMON_SHUTDOWN. Off by default -- the daemon shutting
+    /// down doesn't have to mean this app does too.
+    #[serde(default)]
+    quit_on_daemon_shutdown: bool,
+}
+
+fn local_settings_path(app: &AppHandle) -> Option<PathBuf> {
+    Some(app.path().app_data_dir().ok()?.join(LOCAL_SETTINGS_FILE))
+}
+
+fn read_local_settings(app: &AppHandle) -> LocalSettings {
+    local_settings_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_local_settings(app: &AppHandle, settings: &LocalSettings) -> std::io::Result<()> {
+    let path = local_settings_path(app)
+        .ok_or_else(|| std::io::Error::other("could not resolve app data dir"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json =
+        serde_json::to_string_pretty(settings).map_err(|e| std::io::Error::other(e.to_string()))?;
+    std::fs::write(path, json)
+}
 
 /// Resolves (bundled chime path, marker path) if the one-time
 /// WAKE_CHIME_PATH override (Project-JARVIS#139's "proof of modularity"
@@ -91,6 +127,14 @@ struct ConfigUpdatedPayload {
 struct ConfigErrorPayload {
     key: String,
     message: String,
+}
+
+#[derive(Serialize, Clone)]
+struct DaemonShutdownPayload {
+    state: String,
+    goals: Vec<serde_json::Value>,
+    session_id: Option<String>,
+    timestamp: f64,
 }
 
 #[tauri::command]
@@ -243,6 +287,34 @@ async fn pick_wake_chime_file(app: AppHandle) -> Option<String> {
     rx.recv().ok().flatten().map(|p| p.to_string())
 }
 
+// Project-JARVIS#146 / jarvisos-app#17: connected-clients query + graceful
+// shutdown. list_clients must be called (and its result shown to the user)
+// before request_daemon_shutdown is ever sent -- the frontend enforces the
+// ordering, these are just the two IPC round-trips it needs.
+#[tauri::command]
+fn list_clients(state: State<AppState>) {
+    state.ipc.lock().unwrap().list_clients();
+}
+
+#[tauri::command]
+fn request_daemon_shutdown(state: State<AppState>) {
+    state.ipc.lock().unwrap().request_daemon_shutdown();
+}
+
+#[tauri::command]
+fn get_quit_on_daemon_shutdown(app: AppHandle) -> bool {
+    read_local_settings(&app).quit_on_daemon_shutdown
+}
+
+#[tauri::command]
+fn set_quit_on_daemon_shutdown(enabled: bool, app: AppHandle) {
+    let mut settings = read_local_settings(&app);
+    settings.quit_on_daemon_shutdown = enabled;
+    if let Err(e) = write_local_settings(&app, &settings) {
+        eprintln!("jarvis-ui: failed to write local settings: {e}");
+    }
+}
+
 // Frontend pulls this once on load to reconcile state in case ipc-connected /
 // ipc-state fired (from the backend's IPC poll thread, started in setup())
 // before the webview finished loading and registering its event listeners --
@@ -271,6 +343,14 @@ fn toggle_main_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+fn show_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -318,11 +398,14 @@ pub fn run() {
             let start_on_login = CheckMenuItemBuilder::with_id("start_on_login", "Start on Login")
                 .checked(autostart_enabled)
                 .build(app)?;
+            let shutdown_daemon =
+                MenuItemBuilder::with_id("shutdown_daemon", "Shut Down JARVIS...").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let tray_menu = MenuBuilder::new(app)
                 .item(&show_hide)
                 .item(&start_on_login)
                 .separator()
+                .item(&shutdown_daemon)
                 .item(&quit)
                 .build()?;
 
@@ -335,6 +418,14 @@ pub fn run() {
                         let mgr = app.autolaunch();
                         let enabled = mgr.is_enabled().unwrap_or(false);
                         let _ = if enabled { mgr.disable() } else { mgr.enable() };
+                    }
+                    "shutdown_daemon" => {
+                        // Just surfaces the same confirmation modal the settings
+                        // panel uses -- the tray can't show a client list or
+                        // collect confirmation itself, and shouldn't duplicate
+                        // that UI (Project-JARVIS#146 / jarvisos-app#17).
+                        show_main_window(app);
+                        let _ = app.emit("ipc-open-shutdown-modal", ());
                     }
                     "quit" => app.exit(0),
                     _ => {}
@@ -389,6 +480,10 @@ pub fn run() {
             edit_provider,
             remove_provider,
             pick_wake_chime_file,
+            list_clients,
+            request_daemon_shutdown,
+            get_quit_on_daemon_shutdown,
+            set_quit_on_daemon_shutdown,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
@@ -508,6 +603,31 @@ fn poll_loop(
                 }
                 IpcEvent::ProviderError(message) => {
                     let _ = app.emit("ipc-provider-error", message);
+                }
+                IpcEvent::ClientList(clients) => {
+                    let _ = app.emit("ipc-client-list", clients);
+                }
+                IpcEvent::DaemonShutdown {
+                    state,
+                    goals,
+                    session_id,
+                    timestamp,
+                } => {
+                    let _ = app.emit(
+                        "ipc-daemon-shutdown",
+                        DaemonShutdownPayload {
+                            state,
+                            goals,
+                            session_id,
+                            timestamp,
+                        },
+                    );
+                    // Optional, user-controlled (jarvisos-app#17) -- off by
+                    // default. The daemon is already tearing itself down at
+                    // this point, so there's no in-flight IPC to race here.
+                    if read_local_settings(&app).quit_on_daemon_shutdown {
+                        app.exit(0);
+                    }
                 }
             }
         }
