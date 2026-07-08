@@ -1,18 +1,24 @@
 mod ipc;
+mod widgets;
 
 use ipc::{IpcClient, IpcEvent};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 use tauri::path::BaseDirectory;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
+use widgets::WidgetManifest;
 
 const TRAY_ID: &str = "main-tray";
 const MAIN_WINDOW: &str = "main";
+const WIDGET_WINDOW_PREFIX: &str = "widget-";
+const WIDGETS_RESOURCE_DIR: &str = "resources/widgets";
+const WIDGETS_DATA_DIR: &str = "widgets";
 const WAKE_CHIME_MARKER_FILE: &str = ".wake_chime_bootstrapped";
 const WAKE_CHIME_RESOURCE: &str = "resources/wake_chime.wav";
 const LOCAL_SETTINGS_FILE: &str = "local_settings.json";
@@ -28,6 +34,22 @@ struct LocalSettings {
     /// down doesn't have to mean this app does too.
     #[serde(default)]
     quit_on_daemon_shutdown: bool,
+    /// jarvisos-app#18: widget ids the user has turned on. A widget with no
+    /// entry here is disabled -- absent, not false, is the default state so
+    /// a freshly-installed widget doesn't appear enabled out of nowhere.
+    #[serde(default)]
+    enabled_widgets: Vec<String>,
+    /// Last known on-screen position per widget id, in physical pixels --
+    /// restored the next time that widget's window is created so a
+    /// dragged-and-repositioned widget doesn't snap back to the default
+    /// corner on every restart.
+    #[serde(default)]
+    widget_positions: HashMap<String, (i32, i32)>,
+    /// Widget id -> local directory overriding its bundled/installed
+    /// appearance (a user-supplied HTML/CSS/JS bundle, same shape as any
+    /// other widget directory). Absent means "use the widget's own files".
+    #[serde(default)]
+    widget_appearance_overrides: HashMap<String, String>,
 }
 
 fn local_settings_path(app: &AppHandle) -> Option<PathBuf> {
@@ -78,6 +100,184 @@ fn wake_chime_bootstrap_decision(
         return None;
     }
     Some((resource_path.to_string_lossy().into_owned(), marker_path))
+}
+
+// ---------------------------------------------------------------------------
+// Widget plugin system (jarvisos-app#18)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone)]
+struct WidgetInfo {
+    #[serde(flatten)]
+    manifest: WidgetManifest,
+    enabled: bool,
+}
+
+fn bundled_widgets_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .resolve(WIDGETS_RESOURCE_DIR, BaseDirectory::Resource)
+        .ok()
+}
+
+fn installed_widgets_dir(app: &AppHandle) -> Option<PathBuf> {
+    Some(app.path().app_data_dir().ok()?.join(WIDGETS_DATA_DIR))
+}
+
+fn discover_all_widgets(app: &AppHandle) -> Vec<WidgetManifest> {
+    widgets::discover_widgets(
+        bundled_widgets_dir(app).as_deref(),
+        installed_widgets_dir(app).as_deref(),
+    )
+}
+
+fn find_widget(app: &AppHandle, id: &str) -> Option<WidgetManifest> {
+    discover_all_widgets(app).into_iter().find(|w| w.id == id)
+}
+
+fn widget_window_label(id: &str) -> String {
+    format!("{WIDGET_WINDOW_PREFIX}{id}")
+}
+
+/// Resolves which directory should actually serve a widget's files: a
+/// user-supplied appearance override if one is set for this id, otherwise
+/// the widget's own bundled/installed directory.
+fn widget_serve_dir(app: &AppHandle, manifest: &WidgetManifest) -> PathBuf {
+    read_local_settings(app)
+        .widget_appearance_overrides
+        .get(&manifest.id)
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(|| manifest.dir.clone())
+}
+
+/// Opens (or, if already open, focuses) the widget's overlay window --
+/// borderless, transparent, always-on-top, restored to its last dragged
+/// position if one was saved.
+fn open_widget_window(app: &AppHandle, manifest: &WidgetManifest) {
+    let label = widget_window_label(&manifest.id);
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return;
+    }
+
+    let url = format!("widget://{}/{}", manifest.id, manifest.entry);
+    let Ok(parsed) = url.parse() else { return };
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
+        .title(&manifest.name)
+        .inner_size(160.0, 160.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false);
+
+    if let Some(&(x, y)) = read_local_settings(app).widget_positions.get(&manifest.id) {
+        builder = builder.position(x as f64, y as f64);
+    }
+
+    let _ = builder.build();
+}
+
+fn close_widget_window(app: &AppHandle, id: &str) {
+    if let Some(window) = app.get_webview_window(&widget_window_label(id)) {
+        let _ = window.close();
+    }
+}
+
+/// Re-opens every widget the user had enabled last session -- called once
+/// at startup, mirroring how the main window itself always starts shown.
+fn reopen_enabled_widgets(app: &AppHandle) {
+    let enabled = read_local_settings(app).enabled_widgets;
+    if enabled.is_empty() {
+        return;
+    }
+    let manifests = discover_all_widgets(app);
+    for id in enabled {
+        if let Some(manifest) = manifests.iter().find(|w| w.id == id) {
+            open_widget_window(app, manifest);
+        }
+    }
+}
+
+fn widget_content_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html",
+        Some("css") => "text/css",
+        Some("js") => "application/javascript",
+        Some("json") => "application/json",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("wav") => "audio/wav",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Serves a widget's own files under a dedicated `widget://<id>/<path>`
+/// scheme (jarvisos-app#18), rather than the app's own bundled asset
+/// protocol -- installed widgets live at an arbitrary runtime path in the
+/// data dir, unknown at build time, so they can't be part of the app's own
+/// `frontendDist`. Registering our own scheme also means every response
+/// here gets its own explicit Content-Security-Policy header, satisfying
+/// the "each widget window has its own CSP" requirement directly rather
+/// than relying on `on_web_resource_request` (which the tauri:// protocol
+/// alone supports).
+fn widget_protocol_response(
+    app: &AppHandle,
+    request: &tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::{header, StatusCode};
+
+    let not_found = || {
+        tauri::http::Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Vec::new())
+            .unwrap()
+    };
+
+    let uri = request.uri();
+    let Some(id) = uri.host() else {
+        return not_found();
+    };
+    let rel_path = uri.path().trim_start_matches('/');
+    if rel_path.is_empty() || rel_path.split('/').any(|seg| seg.is_empty() || seg == "..") {
+        return not_found();
+    }
+
+    let Some(manifest) = find_widget(app, id) else {
+        return not_found();
+    };
+    let serve_dir = widget_serve_dir(app, &manifest);
+    let Ok(canonical_dir) = serve_dir.canonicalize() else {
+        return not_found();
+    };
+    let Ok(canonical_file) = serve_dir.join(rel_path).canonicalize() else {
+        return not_found();
+    };
+    // Belt-and-braces against a crafted path escaping the widget's own
+    // directory -- the ".." segment check above should already catch this.
+    if !canonical_file.starts_with(&canonical_dir) {
+        return not_found();
+    }
+
+    let Ok(bytes) = std::fs::read(&canonical_file) else {
+        return not_found();
+    };
+    let content_type = widget_content_type(&canonical_file);
+
+    let mut builder = tauri::http::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type);
+    if content_type == "text/html" {
+        // No fetch/XHR/WebSocket to anywhere, no inline/remote scripts --
+        // a widget only ever needs to render and listen for Tauri events.
+        builder = builder.header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none';",
+        );
+    }
+    builder.body(bytes).unwrap_or_else(|_| not_found())
 }
 
 struct AppState {
@@ -315,6 +515,92 @@ fn set_quit_on_daemon_shutdown(enabled: bool, app: AppHandle) {
     }
 }
 
+#[tauri::command]
+fn list_widgets(app: AppHandle) -> Vec<WidgetInfo> {
+    let enabled = read_local_settings(&app).enabled_widgets;
+    discover_all_widgets(&app)
+        .into_iter()
+        .map(|manifest| {
+            let is_enabled = enabled.contains(&manifest.id);
+            WidgetInfo {
+                manifest,
+                enabled: is_enabled,
+            }
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn set_widget_enabled(id: String, enabled: bool, app: AppHandle) {
+    let mut settings = read_local_settings(&app);
+    settings.enabled_widgets.retain(|w| w != &id);
+    if enabled {
+        settings.enabled_widgets.push(id.clone());
+    }
+    if let Err(e) = write_local_settings(&app, &settings) {
+        eprintln!("jarvis-ui: failed to write local settings: {e}");
+        return;
+    }
+
+    if enabled {
+        if let Some(manifest) = find_widget(&app, &id) {
+            open_widget_window(&app, &manifest);
+        }
+    } else {
+        close_widget_window(&app, &id);
+    }
+}
+
+#[tauri::command]
+async fn pick_widget_appearance_folder(id: String, app: AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog().file().pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let picked = rx.recv().ok().flatten()?;
+    let path = picked.into_path().ok()?;
+    if !path.join("manifest.json").is_file() {
+        // Not a widget directory (no manifest.json) -- reject rather than
+        // silently pointing the widget at a folder that can't ever load.
+        return None;
+    }
+    let path_str = path.to_string_lossy().into_owned();
+
+    let mut settings = read_local_settings(&app);
+    settings
+        .widget_appearance_overrides
+        .insert(id.clone(), path_str.clone());
+    if let Err(e) = write_local_settings(&app, &settings) {
+        eprintln!("jarvis-ui: failed to write local settings: {e}");
+        return None;
+    }
+    // Reopen so the change is visible immediately if the widget is active.
+    if settings.enabled_widgets.contains(&id) {
+        close_widget_window(&app, &id);
+        if let Some(manifest) = find_widget(&app, &id) {
+            open_widget_window(&app, &manifest);
+        }
+    }
+    Some(path_str)
+}
+
+#[tauri::command]
+fn reset_widget_appearance(id: String, app: AppHandle) {
+    let mut settings = read_local_settings(&app);
+    settings.widget_appearance_overrides.remove(&id);
+    if let Err(e) = write_local_settings(&app, &settings) {
+        eprintln!("jarvis-ui: failed to write local settings: {e}");
+        return;
+    }
+    if settings.enabled_widgets.contains(&id) {
+        close_widget_window(&app, &id);
+        if let Some(manifest) = find_widget(&app, &id) {
+            open_widget_window(&app, &manifest);
+        }
+    }
+}
+
 // Frontend pulls this once on load to reconcile state in case ipc-connected /
 // ipc-state fired (from the backend's IPC poll thread, started in setup())
 // before the webview finished loading and registering its event listeners --
@@ -370,6 +656,9 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_dialog::init())
+        .register_uri_scheme_protocol("widget", |ctx, request| {
+            widget_protocol_response(ctx.app_handle(), &request)
+        })
         .manage(AppState {
             ipc,
             is_listening,
@@ -379,6 +668,7 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let wake_chime_bootstrap = pending_wake_chime_bootstrap(&handle);
+            reopen_enabled_widgets(&handle);
             std::thread::Builder::new()
                 .name("jarvis-ipc-poll".into())
                 .spawn(move || {
@@ -448,12 +738,25 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() != MAIN_WINDOW {
+            if window.label() == MAIN_WINDOW {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
                 return;
             }
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+
+            if let Some(id) = window.label().strip_prefix(WIDGET_WINDOW_PREFIX) {
+                // Persisted so a dragged widget restores to where the user
+                // left it, not the default corner, on the next launch.
+                if let WindowEvent::Moved(position) = event {
+                    let app = window.app_handle();
+                    let mut settings = read_local_settings(app);
+                    settings
+                        .widget_positions
+                        .insert(id.to_string(), (position.x, position.y));
+                    let _ = write_local_settings(app, &settings);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -484,6 +787,10 @@ pub fn run() {
             request_daemon_shutdown,
             get_quit_on_daemon_shutdown,
             set_quit_on_daemon_shutdown,
+            list_widgets,
+            set_widget_enabled,
+            pick_widget_appearance_folder,
+            reset_widget_appearance,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

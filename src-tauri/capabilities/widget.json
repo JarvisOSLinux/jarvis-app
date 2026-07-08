@@ -1,0 +1,8 @@
+{
+  "identifier": "widget",
+  "description": "Capabilities for widget windows (jarvisos-app#18) -- deliberately narrower than the main window's default capability: widgets only get to listen for the IPC events they subscribe to, nothing else (no dialog, no shell, no fs).",
+  "windows": ["widget-*"],
+  "permissions": [
+    "core:event:allow-listen"
+  ]
+}

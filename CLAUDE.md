@@ -26,9 +26,15 @@ src-tauri/
 ├── src/
 │   ├── main.rs       Tauri entry point
 │   ├── lib.rs        #[tauri::command] handlers + IPC poll thread
-│   └── ipc.rs        IPC client with auto-reconnect (background thread)
+│   ├── ipc.rs        IPC client with auto-reconnect (background thread)
+│   └── widgets.rs    Widget manifest discovery (bundled + installed scopes)
 ├── resources/
-│   └── wake_chime.wav  Bundled default wake-word sound (one-time override)
+│   ├── wake_chime.wav      Bundled default wake-word sound (one-time override)
+│   └── widgets/
+│       └── wake-word-orb/  Bundled widget: #16 reimplemented on #18
+├── capabilities/
+│   ├── default.json  Main window: core:default, dialog:default, ...
+│   └── widget.json   Widget windows (`widget-*`): core:event:allow-listen only
 ├── Cargo.toml
 ├── tauri.conf.json   Window config, withGlobalTauri: true, bundle.resources
 └── build.rs          tauri-build
@@ -163,6 +169,71 @@ it only ever connects to an existing socket -- so there is no "if" case to
 handle yet; that's a separate, substantial feature (finding/launching the
 `jarvis` binary, tracking its lifecycle) left for a future pass.
 
+### Widget plugin system (jarvisos-app#18 / #16)
+
+A widget is a directory containing `manifest.json` (`id`, `name`,
+`description`, `icon`, `entry`, `trustStatus`, `subscribedEvents`) plus its
+own `index.html`/CSS/JS -- consistent with this app's own "no framework, no
+bundler" approach, and mirroring how `dmcp`/`mcp-registry` describe an MCP
+server. `src-tauri/src/widgets.rs` discovers widgets from two scopes, scanned
+identically and tagged with a `source` field: **bundled**
+(`resources/widgets/<id>/`, shipped with the app -- `tauri.conf.json`'s
+`bundle.resources` includes `resources/widgets/**/*` so the directory is
+packaged recursively, unlike the flat `resources/*` glob used for
+`wake_chime.wav`) and **installed** (`app_data_dir()/widgets/<id>/`,
+user-added, not built yet -- a dedicated default/community widget registry
+repo mirroring `mcp-registry` is a separate, deliberate step left for later).
+A malformed widget (missing `id`/`name`/`entry`, invalid JSON) is silently
+skipped rather than breaking discovery for every other widget.
+
+Each enabled widget gets its own always-on-top, undecorated, transparent,
+non-resizable window (`lib.rs`'s `open_widget_window`), labeled
+`widget-<id>` and served over a dedicated `widget://<id>/<path>` URI scheme
+(`widget_protocol_response`) rather than the app's own bundled `tauri://`
+asset protocol -- installed widgets live at a runtime path unknown at build
+time, so they can't be part of `frontendDist`. Registering a custom scheme
+also means every response gets an explicit, restrictive
+Content-Security-Policy header (`default-src 'self'; script-src 'self';
+style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none';
+frame-src 'none'; object-src 'none';`) applied directly in the handler,
+rather than relying on `on_web_resource_request` (documented as "currently
+only implemented for the `tauri` URI protocol", so it wouldn't cover
+widgets at all). The handler rejects any request path containing an empty
+or `..` segment, then canonicalizes both the serving directory and the
+resolved file and requires the file to remain a descendant of the
+directory -- belt-and-braces against a crafted path escaping the widget's
+own files.
+
+Every widget window is covered by `capabilities/widget.json`
+(`"windows": ["widget-*"]`, granting only `core:event:allow-listen`) --
+deliberately narrower than the main window's `capabilities/default.json`
+(`core:default`, `dialog:default`, etc.): a widget only ever needs to
+render its own UI and listen for the same `ipc-state`/`ipc-wake`/
+`ipc-connected`/`ipc-disconnected` events the main window already emits via
+`AppHandle::emit` (which reaches every window, main or widget, with no
+extra wiring). `#16`'s wake-word orb (`resources/widgets/wake-word-orb/`)
+is the first (and, for now, only) bundled widget built on this system --
+not a separate implementation, `trustStatus: "verified"` since it ships
+with the app itself.
+
+Per-widget state lives in the existing local-only `LocalSettings`/
+`local_settings.json` (never round-tripped to the daemon, since these are
+jarvis-app-only client preferences): `enabled_widgets` (which widgets open
+at startup, via `reopen_enabled_widgets`), `widget_positions` (last dragged
+position, written on every `WindowEvent::Moved` for a `widget-*`-labeled
+window -- no batching/throttling, movement is infrequent enough that it
+doesn't need it), and `widget_appearance_overrides` (an id -> local
+directory map letting a user point a widget at their own HTML/CSS/JS bundle
+instead of its bundled/installed one; `pick_widget_appearance_folder` uses
+`tauri-plugin-dialog`'s `.pick_folder()`, already a dependency from #12's
+wake-sound picker, and requires the picked folder to contain its own
+`manifest.json` before accepting it).
+
+The Settings panel's **Widgets** tab (`list_widgets`/`set_widget_enabled`/
+`pick_widget_appearance_folder`/`reset_widget_appearance`) lists every
+discovered widget with its `trustStatus` badge, an enable/disable toggle,
+and appearance-override controls.
+
 ### Tauri Command / Event Mapping
 
 | Tauri command (JS → Rust)       | Tauri event (Rust → JS)  |
@@ -183,7 +254,7 @@ handle yet; that's a separate, substantial feature (finding/launching the
 | `get_connection_info` (local socket path, no daemon round-trip) | |
 | `list_clients` / `request_daemon_shutdown` | `ipc-client-list` `[label, ...]` |
 | `get_quit_on_daemon_shutdown` / `set_quit_on_daemon_shutdown` (local file, no daemon round-trip) | `ipc-daemon-shutdown` `{state, goals, session_id, timestamp}` |
-| | `ipc-open-shutdown-modal` (tray menu entry point, no payload) |
+| `list_widgets` / `set_widget_enabled` / `pick_widget_appearance_folder` / `reset_widget_appearance` (all local, no daemon round-trip) | `ipc-open-shutdown-modal` (tray menu entry point, no payload) |
 
 ## Build
 
