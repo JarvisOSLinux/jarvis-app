@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>JARVIS</title>
+<style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+    }
+
+    /* The whole window is draggable -- there's no title bar (decorations:
+       false), so this is the only way to reposition the widget. */
+    #stage {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    #orb {
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.35), transparent 60%),
+                    var(--color, #00c8ff);
+        box-shadow: 0 0 24px 4px var(--color, #00c8ff);
+        opacity: 0;
+        transform: scale(0.85);
+        transition: opacity 0.25s ease, transform 0.25s ease, background 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    #orb.visible {
+        opacity: 0.92;
+        transform: scale(1);
+    }
+
+    #orb.pulsing {
+        animation: orb-pulse 1.3s ease-in-out infinite;
+    }
+
+    @keyframes orb-pulse {
+        0%, 100% { transform: scale(1); }
+        50%       { transform: scale(1.12); }
+    }
+</style>
+</head>
+<body>
+    <div id="stage" data-tauri-drag-region>
+        <div id="orb" data-tauri-drag-region></div>
+    </div>
+
+    <script>
+        const orb = document.getElementById('orb');
+
+        // Mirrors the main window's own STATE_COLOR map (main.js) so the
+        // widget reads as the same JARVIS, not a reskin with its own rules.
+        const STATE_COLOR = {
+            idle:       '#00c8ff',
+            woken:      '#00ff88',
+            capturing:  '#00ff88',
+            listening:  '#00ff88',
+            processing: '#ffaa00',
+            speaking:   '#aa44ff',
+            offline:    '#ff4455',
+        };
+
+        // Hidden during idle/offline (jarvisos-app#16's own acceptance
+        // criteria) -- appears the moment a wake word fires and fades back
+        // out once the turn concludes or the silence timeout returns things
+        // to idle. No separate auto-hide timer needed: this just mirrors
+        // whatever state the daemon is already broadcasting.
+        const VISIBLE_STATES = new Set(['woken', 'capturing', 'listening', 'processing', 'speaking']);
+        const PULSING_STATES = new Set(['woken', 'capturing', 'listening', 'processing', 'speaking']);
+
+        function applyState(state) {
+            const color = STATE_COLOR[state] ?? STATE_COLOR.idle;
+            orb.style.setProperty('--color', color);
+            orb.classList.toggle('visible', VISIBLE_STATES.has(state));
+            orb.classList.toggle('pulsing', PULSING_STATES.has(state));
+        }
+
+        applyState('idle');
+
+        if (window.__TAURI__) {
+            const { listen } = window.__TAURI__.event;
+            listen('ipc-state', (e) => applyState(e.payload));
+            listen('ipc-wake', () => applyState('listening'));
+            listen('ipc-disconnected', () => applyState('offline'));
+            listen('ipc-connected', () => applyState('idle'));
+        }
+    </script>
+</body>
+</html>

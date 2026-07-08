@@ -1,0 +1,9 @@
+{
+  "id": "wake-word-orb",
+  "name": "Wake Word Indicator",
+  "description": "A small always-on-top orb showing JARVIS's listening/processing/speaking state, independent of whether the main chat window is open.",
+  "icon": "icon.svg",
+  "entry": "index.html",
+  "trustStatus": "verified",
+  "subscribedEvents": ["ipc-state", "ipc-wake", "ipc-disconnected", "ipc-connected"]
+}

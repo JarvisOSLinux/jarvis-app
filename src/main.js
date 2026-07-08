@@ -41,8 +41,10 @@ const settingsModal      = document.getElementById('settings-modal');
 const settingsCloseBtn   = document.getElementById('settings-close-btn');
 const settingsTabGeneralBtn   = document.getElementById('settings-tab-general-btn');
 const settingsTabProvidersBtn = document.getElementById('settings-tab-providers-btn');
+const settingsTabWidgetsBtn   = document.getElementById('settings-tab-widgets-btn');
 const settingsTabGeneral      = document.getElementById('settings-tab-general');
 const settingsTabProviders    = document.getElementById('settings-tab-providers');
+const settingsTabWidgets      = document.getElementById('settings-tab-widgets');
 const settingsVoiceToggle     = document.getElementById('settings-voice-toggle');
 const settingsConfirmationMode = document.getElementById('settings-confirmation-mode');
 const settingsWakeChimePath   = document.getElementById('settings-wake-chime-path');
@@ -74,6 +76,8 @@ const providerFormSaveBtn     = document.getElementById('provider-form-save-btn'
 
 let cachedProviders = [];
 let editingProviderName = null;
+
+const widgetList = document.getElementById('widget-list');
 
 // ── Status ─────────────────────────────────────────────────────────────────
 // woken/capturing come from the daemon's formal voice state machine
@@ -484,11 +488,12 @@ function showSettingsError(message) {
 }
 
 function switchSettingsTab(tab) {
-    const isGeneral = tab === 'general';
-    settingsTabGeneralBtn.classList.toggle('active', isGeneral);
-    settingsTabProvidersBtn.classList.toggle('active', !isGeneral);
-    settingsTabGeneral.classList.toggle('active', isGeneral);
-    settingsTabProviders.classList.toggle('active', !isGeneral);
+    settingsTabGeneralBtn.classList.toggle('active', tab === 'general');
+    settingsTabProvidersBtn.classList.toggle('active', tab === 'providers');
+    settingsTabWidgetsBtn.classList.toggle('active', tab === 'widgets');
+    settingsTabGeneral.classList.toggle('active', tab === 'general');
+    settingsTabProviders.classList.toggle('active', tab === 'providers');
+    settingsTabWidgets.classList.toggle('active', tab === 'widgets');
 }
 
 function renderSettingsVoiceToggle() {
@@ -506,6 +511,7 @@ async function openSettingsModal() {
     await invoke('list_providers');
     settingsSocketPath.textContent = await invoke('get_connection_info');
     settingsQuitOnShutdown.checked = await invoke('get_quit_on_daemon_shutdown');
+    await refreshWidgetList();
 }
 
 function closeSettingsModal() {
@@ -653,6 +659,89 @@ async function removeProvider(name) {
     await invoke('remove_provider', { name });
 }
 
+// ── Widgets (jarvisos-app#18, #16) ──────────────────────────────────────────
+function trustBadgeClass(trustStatus) {
+    if (trustStatus === 'verified') return 'trust-badge trust-verified';
+    if (trustStatus === 'community') return 'trust-badge trust-community';
+    return 'trust-badge trust-unreviewed';
+}
+
+function buildWidgetItem(w) {
+    const el = document.createElement('div');
+    el.className = 'widget-item';
+
+    const header = document.createElement('div');
+    header.className = 'widget-item-header';
+
+    const name = document.createElement('div');
+    name.className = 'widget-item-name';
+    name.textContent = w.name;
+
+    const badge = document.createElement('span');
+    badge.className = trustBadgeClass(w.trustStatus);
+    badge.textContent = w.trustStatus;
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'widget-toggle-btn' + (w.enabled ? '' : ' disabled');
+    toggleBtn.textContent = w.enabled ? 'Enabled' : 'Disabled';
+    toggleBtn.addEventListener('click', () => setWidgetEnabled(w.id, !w.enabled));
+
+    header.append(name, badge, toggleBtn);
+
+    const desc = document.createElement('div');
+    desc.className = 'widget-item-desc';
+    desc.textContent = w.description || '';
+
+    const meta = document.createElement('div');
+    meta.className = 'widget-item-meta';
+    meta.textContent = w.source === 'installed' ? 'Installed' : 'Bundled';
+
+    const actions = document.createElement('div');
+    actions.className = 'settings-row';
+    const customizeBtn = document.createElement('button');
+    customizeBtn.textContent = 'Customize appearance…';
+    customizeBtn.addEventListener('click', () => customizeWidgetAppearance(w.id));
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = 'Reset appearance';
+    resetBtn.addEventListener('click', () => resetWidgetAppearance(w.id));
+    actions.append(customizeBtn, resetBtn);
+
+    el.append(header, desc, meta, actions);
+    return el;
+}
+
+function renderWidgetList(widgets) {
+    widgetList.innerHTML = '';
+    if (!widgets.length) {
+        const empty = document.createElement('div');
+        empty.className = 'provider-empty';
+        empty.textContent = 'No widgets found.';
+        widgetList.append(empty);
+        return;
+    }
+    for (const w of widgets) widgetList.append(buildWidgetItem(w));
+}
+
+async function refreshWidgetList() {
+    renderWidgetList(await invoke('list_widgets'));
+}
+
+async function setWidgetEnabled(id, enabled) {
+    await invoke('set_widget_enabled', { id, enabled });
+    await refreshWidgetList();
+}
+
+async function customizeWidgetAppearance(id) {
+    const picked = await invoke('pick_widget_appearance_folder', { id });
+    if (!picked) return; // user cancelled, or the folder had no manifest.json
+    await refreshWidgetList();
+}
+
+async function resetWidgetAppearance(id) {
+    await invoke('reset_widget_appearance', { id });
+    await refreshWidgetList();
+}
+
 // ── Daemon shutdown (Project-JARVIS#146 / jarvisos-app#17) ──────────────────
 async function openShutdownModal() {
     shutdownClientList.innerHTML = 'Loading&hellip;';
@@ -750,6 +839,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     settingsCloseBtn.addEventListener('click', closeSettingsModal);
     settingsTabGeneralBtn.addEventListener('click', () => switchSettingsTab('general'));
     settingsTabProvidersBtn.addEventListener('click', () => switchSettingsTab('providers'));
+    settingsTabWidgetsBtn.addEventListener('click', () => switchSettingsTab('widgets'));
     settingsVoiceToggle.addEventListener('click', toggleListening);
     settingsConfirmationMode.addEventListener('change', () => {
         clearSettingsError();
