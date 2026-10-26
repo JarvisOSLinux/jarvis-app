@@ -291,6 +291,7 @@ struct AppState {
 struct ChunkPayload {
     content: String,
     done: bool,
+    comment: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -454,6 +455,23 @@ fn reset_wake_chime_path(state: State<AppState>) {
 #[tauri::command]
 fn list_providers(state: State<AppState>) {
     state.ipc.lock().unwrap().list_providers();
+}
+
+#[tauri::command]
+fn move_provider(name: String, position: usize, state: State<AppState>) {
+    state.ipc.lock().unwrap().move_provider(name, position);
+}
+
+/// The daemon's health check (its `get_status`); this app's own
+/// `get_status` command reports only the connection.
+#[tauri::command]
+fn get_health(full: bool, state: State<AppState>) {
+    state.ipc.lock().unwrap().get_health(full);
+}
+
+#[tauri::command]
+fn list_work(state: State<AppState>) {
+    state.ipc.lock().unwrap().list_work();
 }
 
 #[tauri::command]
@@ -793,6 +811,9 @@ pub fn run() {
             add_provider,
             edit_provider,
             remove_provider,
+            move_provider,
+            get_health,
+            list_work,
             pick_wake_chime_file,
             list_clients,
             request_daemon_shutdown,
@@ -848,13 +869,38 @@ fn poll_loop(
                     set_state(&s);
                     let _ = app.emit("ipc-state", s);
                 }
-                IpcEvent::ResponseChunk { content, done } => {
-                    let _ = app.emit("ipc-chunk", ChunkPayload { content, done });
-                    if done {
+                IpcEvent::ResponseChunk {
+                    content,
+                    done,
+                    comment,
+                } => {
+                    let _ = app.emit(
+                        "ipc-chunk",
+                        ChunkPayload {
+                            content,
+                            done,
+                            comment,
+                        },
+                    );
+                    // After a comment JARVIS carries on working.
+                    if done && !comment {
                         set_state("idle");
                         let _ = app.emit("ipc-state", "idle");
                     }
                 }
+                IpcEvent::Activity(text) => {
+                    let _ = app.emit("ipc-activity", text);
+                }
+                IpcEvent::Action(event) => {
+                    let _ = app.emit("ipc-action", event);
+                }
+                IpcEvent::Health(sections) => {
+                    let _ = app.emit("ipc-health", sections);
+                }
+                IpcEvent::Work(work) => {
+                    let _ = app.emit("ipc-work", work);
+                }
+                IpcEvent::Ignored => {}
                 IpcEvent::WakeWordDetected => {
                     is_listening.store(true, Ordering::Relaxed);
                     set_state("listening");

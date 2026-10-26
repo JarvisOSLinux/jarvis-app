@@ -123,7 +123,22 @@ pub enum IpcEvent {
     ResponseChunk {
         content: String,
         done: bool,
+        /// One sentence of what JARVIS is about to do (Project-JARVIS#273),
+        /// not the answer: the turn goes on after it.
+        comment: bool,
     },
+    /// What JARVIS is doing at this moment (Project-JARVIS#267).
+    Activity(String),
+    /// A start, update or end of something JARVIS did (Project-JARVIS#271),
+    /// passed to the page as the daemon sent it.
+    Action(serde_json::Value),
+    /// The daemon's health check: its `sections`.
+    Health(serde_json::Value),
+    /// What JARVIS is doing now, as `list_work` describes it.
+    Work(serde_json::Value),
+    /// A message type this app does not know. The protocol grows; an unknown
+    /// type is no error.
+    Ignored,
     WakeWordDetected,
     ConfirmationRequest {
         id: String,
@@ -223,6 +238,14 @@ pub enum IpcCommand {
     },
     ListClients,
     RequestDaemonShutdown,
+    GetHealth {
+        full: bool,
+    },
+    ListWork,
+    MoveProvider {
+        name: String,
+        position: usize,
+    },
 }
 
 pub struct IpcClient {
@@ -383,6 +406,20 @@ impl IpcClient {
     pub fn delete_session(&self, id: String) {
         let _ = self.command_tx.send(IpcCommand::DeleteSession { id });
     }
+
+    pub fn get_health(&self, full: bool) {
+        let _ = self.command_tx.send(IpcCommand::GetHealth { full });
+    }
+
+    pub fn list_work(&self) {
+        let _ = self.command_tx.send(IpcCommand::ListWork);
+    }
+
+    pub fn move_provider(&self, name: String, position: usize) {
+        let _ = self
+            .command_tx
+            .send(IpcCommand::MoveProvider { name, position });
+    }
 }
 
 impl Default for IpcClient {
@@ -451,6 +488,13 @@ fn run_connected(
             return;
         }
     };
+
+    // Name this client for list_clients, and ask for the pushed events the
+    // page shows; the daemon sends them only to clients that ask.
+    let hello = format!("{}\n", hello_message());
+    if write_stream.write_all(hello.as_bytes()).is_err() {
+        return;
+    }
 
     loop {
         loop {
@@ -632,10 +676,34 @@ fn run_connected(
                 let msg = format!("{}\n", serde_json::json!({"type":"delete_session","id":id}));
                 let _ = write_stream.write_all(msg.as_bytes());
             }
+            Ok(IpcCommand::GetHealth { full }) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"get_status","full":full}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::ListWork) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"list_work"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::MoveProvider { name, position }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"move_provider","name":name,"position":position})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
     }
+}
+
+/// The first line this app sends on every connection.
+fn hello_message() -> serde_json::Value {
+    serde_json::json!({
+        "type": "hello",
+        "label": "jarvis-app",
+        "subscribe": ["activity", "action"],
+    })
 }
 
 fn parse_daemon_message(line: &str) -> IpcEvent {
@@ -658,7 +726,31 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .unwrap_or("")
                 .to_string(),
             done: value.get("done").and_then(|d| d.as_bool()).unwrap_or(true),
+            comment: value
+                .get("comment")
+                .and_then(|c| c.as_bool())
+                .unwrap_or(false),
         },
+        Some("activity") => IpcEvent::Activity(
+            value
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string(),
+        ),
+        Some("action") => IpcEvent::Action(value),
+        Some("status") => IpcEvent::Health(
+            value
+                .get("sections")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        ),
+        Some("work") => IpcEvent::Work(
+            value
+                .get("work")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
+        ),
         Some("wake_word_detected") => IpcEvent::WakeWordDetected,
         Some("confirmation_request") => IpcEvent::ConfirmationRequest {
             id: value
@@ -798,7 +890,7 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .unwrap_or(0.0),
         },
         Some("ping") | Some("pong") => IpcEvent::State("idle".into()),
-        other => IpcEvent::Error(format!("unknown type: {other:?}")),
+        _ => IpcEvent::Ignored,
     }
 }
 
@@ -904,6 +996,85 @@ mod token_handshake_tests {
     }
 }
 
+// What the daemon added for jarvis-app and the phone (Project-JARVIS#267):
+// activity and action events, its health check and running work, and marks
+// on a reply. And the rule that let them in: an unknown type is ignored, not
+// shown as an error -- main.js alerts on every error.
+#[cfg(test)]
+mod new_message_tests {
+    use super::*;
+
+    #[test]
+    fn hello_names_the_app_and_subscribes() {
+        assert_eq!(
+            hello_message(),
+            serde_json::json!({
+                "type": "hello",
+                "label": "jarvis-app",
+                "subscribe": ["activity", "action"],
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_type_is_ignored() {
+        assert!(matches!(
+            parse_daemon_message(r#"{"type":"something_new","x":1}"#),
+            IpcEvent::Ignored
+        ));
+        assert!(matches!(
+            parse_daemon_message(r#"{"no_type":true}"#),
+            IpcEvent::Ignored
+        ));
+        assert!(matches!(
+            parse_daemon_message("not json"),
+            IpcEvent::Error(_)
+        ));
+    }
+
+    #[test]
+    fn a_comment_is_marked() {
+        match parse_daemon_message(
+            r#"{"type":"response","content":"Let me check.","done":true,"comment":true}"#,
+        ) {
+            IpcEvent::ResponseChunk { comment, done, .. } => assert!(comment && done),
+            other => panic!("{other:?}"),
+        }
+        match parse_daemon_message(r#"{"type":"response","content":"Done.","done":true}"#) {
+            IpcEvent::ResponseChunk { comment, .. } => assert!(!comment),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn activity_actions_health_and_work() {
+        match parse_daemon_message(r#"{"type":"activity","text":"Searching…","kind":"dispatch"}"#)
+        {
+            IpcEvent::Activity(text) => assert_eq!(text, "Searching…"),
+            other => panic!("{other:?}"),
+        }
+        let action =
+            r#"{"type":"action","phase":"end","id":"tool:7","status":"ok","output":"3.14"}"#;
+        match parse_daemon_message(action) {
+            IpcEvent::Action(value) => {
+                assert_eq!(value["id"], "tool:7");
+                assert_eq!(value["output"], "3.14");
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse_daemon_message(
+            r#"{"type":"status","full":false,"sections":[{"title":"Engines","checks":[]}]}"#,
+        ) {
+            IpcEvent::Health(sections) => assert_eq!(sections[0]["title"], "Engines"),
+            other => panic!("{other:?}"),
+        }
+        match parse_daemon_message(r#"{"type":"work","work":{"tasks":[],"thinking":1}}"#) {
+            IpcEvent::Work(work) => assert_eq!(work["thinking"], 1),
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
 // These drive a real AF_UNIX socket, so they are Unix-only: on Windows the
 // transport is TCP-on-localhost plus a port file (see connect_to_daemon's
 // cfg(windows) arm), which this harness does not stand up. Its connect and
@@ -979,6 +1150,7 @@ mod tests {
         let mut reader = BufReader::new(stream);
 
         wait_for_event(&client, |e| matches!(e, IpcEvent::Connected));
+        assert_eq!(read_line(&mut reader), hello_message());
 
         client.list_confirmations();
         assert_eq!(
@@ -1119,6 +1291,7 @@ mod tests {
         let mut reader = BufReader::new(stream);
 
         wait_for_event(&client, |e| matches!(e, IpcEvent::Connected));
+        assert_eq!(read_line(&mut reader), hello_message());
 
         client.get_settings();
         assert_eq!(
@@ -1152,6 +1325,24 @@ mod tests {
         assert_eq!(
             read_line(&mut reader),
             serde_json::json!({"type": "reset_wake_chime_path"})
+        );
+
+        client.get_health(true);
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "get_status", "full": true})
+        );
+
+        client.list_work();
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "list_work"})
+        );
+
+        client.move_provider("my-ollama".into(), 1);
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "move_provider", "name": "my-ollama", "position": 1})
         );
 
         client.list_providers();
@@ -1243,6 +1434,7 @@ mod tests {
         let mut reader = BufReader::new(stream);
 
         wait_for_event(&client, |e| matches!(e, IpcEvent::Connected));
+        assert_eq!(read_line(&mut reader), hello_message());
 
         client.list_clients();
         assert_eq!(

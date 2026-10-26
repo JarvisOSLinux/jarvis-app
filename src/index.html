@@ -13,6 +13,7 @@
             <div class="header-title">JARVIS</div>
             <div class="header-subtitle">AI Operating System</div>
         </div>
+        <button class="icon-btn" id="work-btn" title="What JARVIS is doing">&#9201;</button>
         <button class="icon-btn" id="permissions-btn" title="Permission Requests">
             &#128274;
             <span id="permission-indicator"></span>
@@ -40,6 +41,17 @@
             <button id="approve-all-btn" title="Approve all" disabled>Approve All</button>
         </div>
         <div id="permission-list"></div>
+    </aside>
+
+    <div id="work-backdrop"></div>
+    <aside id="work-panel">
+        <div id="work-panel-header">
+            <span>What JARVIS is doing</span>
+            <button id="status-btn" title="Check JARVIS's health">Status</button>
+            <button class="panel-close" id="work-close" title="Close">&#10005;</button>
+        </div>
+        <div id="work-list"></div>
+        <div id="status-list"></div>
     </aside>
 
     <div id="settings-backdrop"></div>
@@ -168,6 +180,8 @@
         </div>
         <div id="messages"></div>
     </div>
+
+    <div id="activity" class="hidden"></div>
 
     <div id="divider"></div>
 

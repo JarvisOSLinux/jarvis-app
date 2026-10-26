@@ -71,13 +71,27 @@ platform, not just compiled for Windows).
                       `set_wake_chime_path`, `reset_wake_chime_path`,
                       `get_settings`, `set_confirmation_mode`,
                       `list_providers`, `add_provider`, `edit_provider`,
-                      `remove_provider`, `list_clients`, `shutdown_request`
-**Daemon -> Client**: `state`, `response` (streaming), `wake_word_detected`,
+                      `remove_provider`, `move_provider`, `list_clients`,
+                      `shutdown_request`, `get_status` (the daemon's health
+                      check; the Tauri command is `get_health`, since this
+                      app's own `get_status` reports the connection),
+                      `list_work`, and `hello` (sent first on every
+                      connection: label `jarvis-app`, subscribing to
+                      `activity` and `action`)
+**Daemon -> Client**: `state`, `response` (streaming; `comment: true` marks
+                      a sentence of what JARVIS is about to do, after which
+                      the state stays busy), `wake_word_detected`,
                       `confirmation_request`, `error`, `session_list`,
                       `session_switched`, `session_error`,
                       `config_updated`, `config_error`, `settings`,
                       `provider_list`, `provider_error`, `client_list`,
-                      `DAEMON_SHUTDOWN`
+                      `DAEMON_SHUTDOWN`, and the Project-JARVIS#267 additions:
+                      `activity` and `action` (pushed, since this app
+                      subscribes), `status` and `work` (replies)
+
+The full protocol is Project-JARVIS's `docs/gui-protocol.md`. A message type
+this app does not know is ignored (`IpcEvent::Ignored`), not raised as an
+error: `main.js` shows every error as an alert, and the protocol grows.
 
 Session CRUD (`Project-JARVIS`'s `jarvis/runtime/io.py`) is a thin wrapper
 over the existing `SessionManager` (`new_session`/`list`/`switch`/`rename`/
