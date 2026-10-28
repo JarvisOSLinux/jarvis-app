@@ -475,6 +475,21 @@ fn list_work(state: State<AppState>) {
 }
 
 #[tauri::command]
+fn stop(state: State<AppState>) {
+    state.ipc.lock().unwrap().stop();
+}
+
+#[tauri::command]
+fn stop_all(state: State<AppState>) {
+    state.ipc.lock().unwrap().stop_all();
+}
+
+#[tauri::command]
+fn stop_task(pid: i64, state: State<AppState>) {
+    state.ipc.lock().unwrap().stop_task(pid);
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn add_provider(
     ptype: String,
@@ -814,6 +829,9 @@ pub fn run() {
             move_provider,
             get_health,
             list_work,
+            stop,
+            stop_all,
+            stop_task,
             pick_wake_chime_file,
             list_clients,
             request_daemon_shutdown,
@@ -913,7 +931,15 @@ fn poll_loop(
                 IpcEvent::ConfirmationList(list) => {
                     let _ = app.emit("ipc-confirmation-list", list);
                 }
-                IpcEvent::Ack => {}
+                IpcEvent::Ack {
+                    message,
+                    for_request,
+                } => {
+                    let _ = app.emit(
+                        "ipc-ack",
+                        serde_json::json!({"message": message, "for": for_request}),
+                    );
+                }
                 IpcEvent::ConfigUpdated { key, value } => {
                     if key == "WAKE_CHIME_PATH" {
                         if let Some((_, marker_path)) = wake_chime_bootstrap.take() {

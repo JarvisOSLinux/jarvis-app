@@ -40,9 +40,10 @@ src-tauri/
 ├── tauri.conf.json   Window config, withGlobalTauri: true, bundle.resources
 └── build.rs          tauri-build
 
-src/
+src/                  One UI for this app and for `jarvis web` in a browser
 ├── index.html        App shell (header, chat-view, input-bar)
-├── styles.css        Dark navy + cyan theme
+├── styles.css        Dark navy + cyan theme, phone layout under 700px
+├── transport.js      Tauri or the gateway's WebSocket, same invoke/listen
 └── main.js           IPC event listeners, message rendering
 
 python/
@@ -75,7 +76,8 @@ platform, not just compiled for Windows).
                       `shutdown_request`, `get_status` (the daemon's health
                       check; the Tauri command is `get_health`, since this
                       app's own `get_status` reports the connection),
-                      `list_work`, and `hello` (sent first on every
+                      `list_work`, `stop`, `stop_all`, `stop_task`
+                      (Project-JARVIS#270), and `hello` (sent first on every
                       connection: label `jarvis-app`, subscribing to
                       `activity` and `action`)
 **Daemon -> Client**: `state`, `response` (streaming; `comment: true` marks
@@ -108,6 +110,33 @@ voice/response state machine (`Project-JARVIS`#141); `listening` is the
 separate manual mic-toggle state; `offline` is client-side only (never sent
 by the daemon). The daemon's `state` message can also carry a `meta` object
 (currently just a discard reason) -- not yet consumed here.
+
+### One UI for the app and the browser
+
+`src/` is also the page Project-JARVIS's `jarvis web` gateway serves to
+phones over Tailscale: Project-JARVIS keeps a pinned copy in
+`jarvis/server/web/` (`scripts/sync-web-ui.sh` there copies it from a
+jarvis-app checkout and records the commit and file hashes, and a test fails
+on a hand edit). So a UI change is made here, once, and synced there.
+
+`transport.js` is the only difference between the two: inside Tauri it hands
+`invoke`/`listen` to `window.__TAURI__`; in a browser it maps the same
+commands to socket messages over the gateway's WebSocket and turns replies
+into the same events with the same payloads (`get_status`, the connection
+check, is answered locally). `main.js` reads `JarvisTransport.kind`:
+- `body.desktop` or `body.web`; controls marked `desktop-only` (settings,
+  providers, widgets, the mic, Approve All) are hidden in a browser, where
+  the gateway would refuse them anyway.
+- the desktop user is the owner (`can-approve`, `can-manage`); a browser
+  takes its role from the gateway's `gateway` frame, and a guest neither
+  approves, manages sessions, nor switches the host's session.
+
+Stop (Project-JARVIS#270): the ■ button stops JARVIS's work in the session
+(lit while it works), Stop all in the ⏱ panel also ends the running tasks,
+and each running task there has its own Stop. The daemon answers each with
+an `ack` whose `for` names the request; only a stop's reply is shown, so a
+confirmation decided does not add a line. Errors show in a banner above the
+input instead of an alert.
 
 ### Wake chime one-time bootstrap (Project-JARVIS#139)
 
@@ -279,6 +308,7 @@ and appearance-override controls.
 | `list_clients` / `request_daemon_shutdown` | `ipc-client-list` `[label, ...]` |
 | `get_quit_on_daemon_shutdown` / `set_quit_on_daemon_shutdown` (local file, no daemon round-trip) | `ipc-daemon-shutdown` `{state, goals, session_id, timestamp}` |
 | `list_widgets` / `set_widget_enabled` / `pick_widget_appearance_folder` / `reset_widget_appearance` (all local, no daemon round-trip) | `ipc-open-shutdown-modal` (tray menu entry point, no payload) |
+| `stop` / `stop_all` / `stop_task(pid)` | `ipc-ack` `{message, for}` |
 
 ## Build
 
