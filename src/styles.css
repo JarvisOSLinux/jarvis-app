@@ -1404,3 +1404,99 @@ details.action-block > summary:hover { background: var(--card); }
     font-size: 16px;
 }
 #work-btn:hover { color: var(--primary); }
+
+/* ── One page for the app and the browser (jarvis web) ── */
+html, body { height: 100dvh; }
+
+/* Settings, providers, widgets, voice and shutdown belong to the desktop. */
+body.web .desktop-only { display: none !important; }
+
+#who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+#notice {
+    background: rgba(255, 68, 85, 0.12);
+    border-top: 1px solid #ff4455;
+    color: #ff8896;
+    font-size: 13px;
+    padding: 10px 16px;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+#permissions-btn { position: relative; }
+#permission-count {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    min-width: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: #ffaa00;
+    color: #0a0e1a;
+    font-size: 11px;
+    font-weight: bold;
+    line-height: 16px;
+    text-align: center;
+}
+#permission-count:empty { display: none; }
+
+/* Stop is always on screen, and lit while JARVIS is working (#270). */
+#stop-btn { color: var(--text-secondary); }
+body.working #stop-btn {
+    color: #ff4455;
+    border-color: #ff4455;
+    box-shadow: 0 0 10px rgba(255, 68, 85, 0.35);
+}
+
+#stop-all-btn {
+    border: 1px solid #7a2530;
+    border-radius: 8px;
+    background: rgba(255, 68, 85, 0.10);
+    color: #ff4455;
+    font-size: 12px;
+    padding: 8px 12px;
+    min-height: 36px;
+    margin-right: 8px;
+    cursor: pointer;
+}
+
+.work-item-head { display: flex; align-items: flex-start; gap: 8px; }
+.work-item-head .work-item-title { flex: 1; min-width: 0; }
+.task-stop-btn {
+    flex-shrink: 0;
+    border: 1px solid #7a2530;
+    border-radius: 8px;
+    background: rgba(255, 68, 85, 0.10);
+    color: #ff4455;
+    font-size: 12px;
+    padding: 6px 12px;
+    min-height: 32px;
+    cursor: pointer;
+}
+
+#permission-panel-header #approve-all-btn { margin-left: auto; margin-right: 8px; }
+#permission-panel-header .panel-close { margin-left: auto; }
+#permission-panel-header #approve-all-btn + .panel-close { margin-left: 0; }
+
+/* In a browser the gateway's role decides (docs/web-gateway.md); the desktop
+   user is the owner. Action blocks, status and work are for the roles trusted
+   to approve; a guest watches and chats. */
+body:not(.can-approve) #work-btn { display: none; }
+body:not(.can-approve) .permission-action { display: none; }
+body:not(.can-approve) .permission-task input { display: none; }
+body:not(.can-manage) .session-item-actions { display: none; }
+body:not(.can-approve) #new-session-btn { display: none; }
+
+@media (max-width: 700px) {
+    #header { height: 56px; padding: 0 12px; padding-top: env(safe-area-inset-top); gap: 8px; }
+    .header-title { font-size: 17px; letter-spacing: 3px; }
+    #session-sidebar { width: 86%; }
+    #permission-panel { width: 100%; max-width: 100%; }
+    #work-panel { width: 100%; max-width: 100%; }
+    details.action-block { margin-left: 0; max-width: 100%; }
+    #input-bar { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); height: auto; }
+    .input-wrapper input { font-size: 16px; } /* 16px stops iOS zooming on focus */
+    .icon-btn { min-width: 44px; min-height: 44px; }
+    .permission-action { min-height: 48px; font-size: 15px; }
+    #chat-view { padding: 12px; }
+}

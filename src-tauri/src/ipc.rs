@@ -145,7 +145,12 @@ pub enum IpcEvent {
         tool_names: Vec<String>,
     },
     ConfirmationList(Vec<serde_json::Value>),
-    Ack,
+    /// The daemon's reply to a request, and which request it answers (`for`):
+    /// a stop's says what stopped and what still runs.
+    Ack {
+        message: String,
+        for_request: Option<String>,
+    },
     ConfigUpdated {
         key: String,
         value: String,
@@ -245,6 +250,14 @@ pub enum IpcCommand {
     MoveProvider {
         name: String,
         position: usize,
+    },
+    /// Stop JARVIS's work in the current session (Project-JARVIS#270).
+    Stop,
+    /// Stop, and end the session's running tasks too.
+    StopAll,
+    /// End one running task.
+    StopTask {
+        pid: i64,
     },
 }
 
@@ -419,6 +432,18 @@ impl IpcClient {
         let _ = self
             .command_tx
             .send(IpcCommand::MoveProvider { name, position });
+    }
+
+    pub fn stop(&self) {
+        let _ = self.command_tx.send(IpcCommand::Stop);
+    }
+
+    pub fn stop_all(&self) {
+        let _ = self.command_tx.send(IpcCommand::StopAll);
+    }
+
+    pub fn stop_task(&self, pid: i64) {
+        let _ = self.command_tx.send(IpcCommand::StopTask { pid });
     }
 }
 
@@ -691,6 +716,18 @@ fn run_connected(
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
+            Ok(IpcCommand::Stop) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"stop"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::StopAll) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"stop_all"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::StopTask { pid }) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"stop_task","pid":pid}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
@@ -799,7 +836,17 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .unwrap_or("")
                 .to_string(),
         },
-        Some("ack") => IpcEvent::Ack,
+        Some("ack") => IpcEvent::Ack {
+            message: value
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("")
+                .to_string(),
+            for_request: value
+                .get("for")
+                .and_then(|f| f.as_str())
+                .map(str::to_string),
+        },
         Some("error") => IpcEvent::Error(
             value
                 .get("message")
@@ -1132,6 +1179,58 @@ mod tests {
         }
     }
 
+    // Project-JARVIS#270: the stops, and the ack that says what a stop did.
+    #[test]
+    fn stop_commands_round_trip_over_real_socket() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = unique_sock_path("stop");
+        let _ = std::fs::remove_file(&path);
+        std::env::set_var("JARVIS_SOCKET", &path);
+
+        let listener = UnixListener::bind(&path).unwrap();
+        let client = IpcClient::new();
+
+        let (stream, _) = listener.accept().unwrap();
+        let mut write_half = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+
+        wait_for_event(&client, |e| matches!(e, IpcEvent::Connected));
+        assert_eq!(read_line(&mut reader), hello_message());
+
+        client.stop();
+        assert_eq!(read_line(&mut reader), serde_json::json!({"type": "stop"}));
+        client.stop_all();
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "stop_all"})
+        );
+        client.stop_task(7);
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "stop_task", "pid": 7})
+        );
+
+        write_half
+            .write_all(
+                b"{\"type\":\"ack\",\"for\":\"stop_task\",\
+                   \"message\":\"Stopped run_job (shell): sleep 300.\"}\n",
+            )
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::Ack { .. })) {
+            IpcEvent::Ack {
+                message,
+                for_request,
+            } => {
+                assert_eq!(message, "Stopped run_job (shell): sleep 300.");
+                assert_eq!(for_request.as_deref(), Some("stop_task"));
+            }
+            _ => unreachable!(),
+        }
+
+        std::env::remove_var("JARVIS_SOCKET");
+        let _ = std::fs::remove_file(&path);
+    }
+
     // Exercises the real IpcClient background threads end-to-end over an
     // actual Unix socket -- not a mock -- so it catches wire-format drift
     // between this client and jarvis's confirmation-query protocol.
@@ -1219,10 +1318,16 @@ mod tests {
         write_half
             .write_all(b"{\"type\":\"ack\",\"message\":\"Approved req1\"}\n")
             .unwrap();
-        assert!(matches!(
-            wait_for_event(&client, |e| matches!(e, IpcEvent::Ack)),
-            IpcEvent::Ack
-        ));
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::Ack { .. })) {
+            IpcEvent::Ack {
+                message,
+                for_request,
+            } => {
+                assert_eq!(message, "Approved req1");
+                assert_eq!(for_request, None);
+            }
+            _ => unreachable!(),
+        }
 
         write_half
             .write_all(b"{\"type\":\"confirmation_request\",\"id\":\"req3\",\"tools\":[\"net.request\"]}\n")

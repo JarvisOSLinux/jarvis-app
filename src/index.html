@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0a0e1a">
     <title>JARVIS</title>
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -11,14 +12,15 @@
         <button class="icon-btn" id="sessions-btn" title="Sessions">&#9776;</button>
         <div class="header-info">
             <div class="header-title">JARVIS</div>
-            <div class="header-subtitle">AI Operating System</div>
+            <div class="header-subtitle" id="who">AI Operating System</div>
         </div>
         <button class="icon-btn" id="work-btn" title="What JARVIS is doing">&#9201;</button>
         <button class="icon-btn" id="permissions-btn" title="Permission Requests">
             &#128274;
             <span id="permission-indicator"></span>
+            <span id="permission-count"></span>
         </button>
-        <button class="icon-btn" id="settings-btn" title="Settings">&#9881;</button>
+        <button class="icon-btn desktop-only" id="settings-btn" title="Settings">&#9881;</button>
         <div id="status-indicator">
             <div id="status-dot"></div>
             <span id="status-label">Offline</span>
@@ -38,7 +40,8 @@
     <aside id="permission-panel">
         <div id="permission-panel-header">
             <span id="permission-panel-title">Permission Requests</span>
-            <button id="approve-all-btn" title="Approve all" disabled>Approve All</button>
+            <button class="desktop-only" id="approve-all-btn" title="Approve all" disabled>Approve All</button>
+            <button class="panel-close" id="permission-close" title="Close">&#10005;</button>
         </div>
         <div id="permission-list"></div>
     </aside>
@@ -48,6 +51,7 @@
         <div id="work-panel-header">
             <span>What JARVIS is doing</span>
             <button id="status-btn" title="Check JARVIS's health">Status</button>
+            <button id="stop-all-btn" title="Stop, and end the running tasks too">Stop all</button>
             <button class="panel-close" id="work-close" title="Close">&#10005;</button>
         </div>
         <div id="work-list"></div>
@@ -181,6 +185,8 @@
         <div id="messages"></div>
     </div>
 
+    <div id="notice" class="hidden" title="Click to dismiss"></div>
+
     <div id="activity" class="hidden"></div>
 
     <div id="divider"></div>
@@ -190,16 +196,19 @@
             <input
                 type="text"
                 id="message-input"
-                placeholder="Connecting to daemon&hellip;"
+                placeholder="Connecting&hellip;"
                 autocomplete="off"
+                enterkeyhint="send"
                 disabled
             >
         </div>
-        <button class="icon-btn" id="mic-btn" title="Toggle voice input">&#127908;</button>
+        <button class="icon-btn desktop-only" id="mic-btn" title="Toggle voice input">&#127908;</button>
+        <button class="icon-btn" id="stop-btn" title="Stop JARVIS (its running tasks keep running)">&#9632;</button>
         <button class="icon-btn" id="send-btn" title="Send message" disabled>&#9654;</button>
     </div>
 
     <script src="markdown.js"></script>
+    <script src="transport.js"></script>
     <script src="main.js"></script>
 </body>
 </html>

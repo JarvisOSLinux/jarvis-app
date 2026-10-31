@@ -1,14 +1,20 @@
 'use strict';
 
-// Tauri 2 globals injected via withGlobalTauri: true
-const invoke = window.__TAURI__.core.invoke;
-const listen  = window.__TAURI__.event.listen;
+// One page for jarvis-app and for `jarvis web` in a browser (Project-JARVIS
+// serves a pinned copy of this folder). transport.js says which, and carries
+// invoke/listen either way. Settings, providers, widgets, voice and daemon
+// shutdown are the desktop's (`desktop-only` in index.html); in a browser the
+// gateway's role decides what may be approved or managed.
+const { invoke, listen } = window.JarvisTransport;
+const IS_DESKTOP = window.JarvisTransport.kind === 'tauri';
 
 // ── State ──────────────────────────────────────────────────────────────────
 let isConnected     = false;
 let isListening     = false;
 let hasMessages     = false;
 let currentSessionId = null;
+// The desktop user owns this JARVIS; a browser learns its role from the gateway.
+let role            = IS_DESKTOP ? 'owner' : 'guest';
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
 const chatView        = document.getElementById('chat-view');
@@ -17,6 +23,9 @@ const messages        = document.getElementById('messages');
 const messageInput    = document.getElementById('message-input');
 const sendBtn         = document.getElementById('send-btn');
 const micBtn          = document.getElementById('mic-btn');
+const stopBtn         = document.getElementById('stop-btn');
+const who             = document.getElementById('who');
+const notice          = document.getElementById('notice');
 const statusDot       = document.getElementById('status-dot');
 const statusLabel     = document.getElementById('status-label');
 const sessionsBtn     = document.getElementById('sessions-btn');
@@ -27,6 +36,7 @@ const newSessionBtn   = document.getElementById('new-session-btn');
 
 const permissionsBtn     = document.getElementById('permissions-btn');
 const permissionIndicator = document.getElementById('permission-indicator');
+const permissionCount    = document.getElementById('permission-count');
 const permissionBackdrop = document.getElementById('permission-backdrop');
 const permissionPanel    = document.getElementById('permission-panel');
 const permissionPanelTitle = document.getElementById('permission-panel-title');
@@ -110,7 +120,7 @@ const STATE_LABEL = {
     woken:      'Listening',
     capturing:  'Listening',
     listening:  'Listening',
-    processing: 'Processing',
+    processing: 'Working',
     speaking:   'Speaking',
     offline:    'Offline',
 };
@@ -127,6 +137,7 @@ function setStatus(state) {
 
     const pulsing = LISTENING_LIKE_STATES.has(state) || state === 'processing' || state === 'speaking';
     statusDot.classList.toggle('pulsing', pulsing);
+    document.body.classList.toggle('working', state === 'processing');
 
     isListening = LISTENING_LIKE_STATES.has(state);
     micBtn.classList.toggle('listening', isListening);
@@ -136,7 +147,7 @@ function setStatus(state) {
 function setConnected(connected) {
     isConnected = connected;
     messageInput.disabled    = !connected;
-    messageInput.placeholder = connected ? 'Message JARVIS…' : 'Connecting to daemon…';
+    messageInput.placeholder = connected ? 'Message JARVIS…' : 'Connecting…';
     if (!connected) {
         micBtn.classList.remove('listening');
         isListening = false;
@@ -147,6 +158,12 @@ function setConnected(connected) {
 
 function refreshSendBtn() {
     sendBtn.disabled = !isConnected || messageInput.value.trim() === '';
+}
+
+/// A line above the input for what went wrong; a click dismisses it.
+function showNotice(text) {
+    notice.textContent = text;
+    notice.classList.toggle('hidden', !text);
 }
 
 // ── Messages ───────────────────────────────────────────────────────────────
@@ -534,7 +551,17 @@ function renderWork(work) {
             row.append(el('div', 'work-item-meta', `fires in ${duration(t.fires_in)}`));
             return row;
         }
-        row.append(el('div', 'work-item-title', `⋯ ${t.title}`));
+        const head = el('div', 'work-item-head');
+        head.append(el('div', 'work-item-title', `⋯ ${t.title}`));
+        // Kills this task only; a package manager asks for a second press (#270).
+        const stopTask = el('button', 'task-stop-btn', 'Stop');
+        stopTask.title = 'End this task';
+        stopTask.addEventListener('click', async () => {
+            await invoke('stop_task', { pid: t.pid });
+            invoke('list_work');
+        });
+        head.append(stopTask);
+        row.append(head);
         const meta = [t.running_for != null ? `running ${duration(t.running_for)}` : '', t.request ? `for: ${t.request}` : '']
             .filter(Boolean).join(' · ');
         if (meta) row.append(el('div', 'work-item-meta', meta));
@@ -696,6 +723,7 @@ function renderPermissionList(items) {
         ? `Permission Requests (${items.length})`
         : 'Permission Requests';
     approveAllBtn.disabled = items.length === 0;
+    permissionCount.textContent = items.length ? String(items.length) : '';
 
     if (!items.length) {
         const empty = document.createElement('div');
@@ -1055,6 +1083,47 @@ function handleDaemonShutdown(payload) {
     setStatus('offline');
 }
 
+// ── Stop (Project-JARVIS#270) ────────────────────────────────────────────────
+// The daemon answers each stop with an `ack` saying what stopped and what
+// still runs; acks for other requests (a confirmation decided) stay quiet.
+const STOP_COMMANDS = new Set(['stop', 'stop_all', 'stop_task']);
+
+/// Stops JARVIS's work in the session; its running tasks keep running.
+async function stopReply() {
+    await invoke('stop');
+}
+
+function onAck(ack) {
+    if (STOP_COMMANDS.has(ack.for) && ack.message) addSystemMessage(ack.message);
+}
+
+// ── Connection ─────────────────────────────────────────────────────────────
+/// The gateway's word on who this browser is (`jarvis web` only).
+function applyGateway(info) {
+    role = info.role;
+    who.textContent = `${info.login} · ${info.role}`;
+    // Only owner and trusted may answer a request; a guest watches and chats.
+    document.body.classList.toggle('can-approve', role === 'owner' || role === 'trusted');
+    document.body.classList.toggle('can-manage', role === 'owner');
+}
+
+function handleDisconnect(info) {
+    setConnected(false);
+    setStatus('offline');
+    closeWorkPanel();
+    actionBlocks.clear();
+    showActivity('');
+    if (info && info.reason) showNotice(info.reason);
+}
+
+function closePanels() {
+    closeWorkPanel();
+    closePermissionPanel();
+    closeSidebar();
+    closeSettingsModal();
+    closeShutdownModal();
+}
+
 // ── Actions ────────────────────────────────────────────────────────────────
 async function sendMessage() {
     const text = messageInput.value.trim();
@@ -1072,6 +1141,9 @@ async function toggleListening() {
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+    document.body.classList.add(IS_DESKTOP ? 'desktop' : 'web');
+    if (IS_DESKTOP) document.body.classList.add('can-approve', 'can-manage');
+
     messageInput.addEventListener('input', refreshSendBtn);
 
     messageInput.addEventListener('keydown', (e) => {
@@ -1083,6 +1155,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     sendBtn.addEventListener('click', sendMessage);
     micBtn.addEventListener('click', toggleListening);
+    stopBtn.addEventListener('click', stopReply);
+    notice.addEventListener('click', () => showNotice(''));
+    // On a phone a panel covers the screen, so each has its own way out.
+    document.getElementById('permission-close').addEventListener('click', closePermissionPanel);
+    document.getElementById('stop-all-btn').addEventListener('click', () => invoke('stop_all'));
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closePanels();
+    });
     sessionsBtn.addEventListener('click', toggleSidebar);
     sessionBackdrop.addEventListener('click', closeSidebar);
     newSessionBtn.addEventListener('click', createNewSession);
@@ -1127,13 +1207,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // IPC events from Rust backend
-    await listen('ipc-connected',    ()      => { setConnected(true); invoke('list_sessions'); invoke('list_confirmations'); });
-    await listen('ipc-disconnected', ()      => {
-        setConnected(false);
-        setStatus('offline');
-        closeWorkPanel();
-        actionBlocks.clear();
+    await listen('ipc-connected',    ()      => {
+        setConnected(true);
+        showNotice('');
+        invoke('list_sessions');
+        invoke('list_confirmations');
     });
+    await listen('ipc-disconnected', (e)     => handleDisconnect(e.payload));
+    await listen('ipc-gateway',      (e)     => applyGateway(e.payload));
+    await listen('ipc-ack',          (e)     => onAck(e.payload));
     await listen('ipc-state',        (e)     => setStatus(e.payload));
     await listen('ipc-chunk',        (e)     => appendJarvisChunk(e.payload.content, e.payload.done, e.payload.comment));
     await listen('ipc-activity',     (e)     => showActivity(e.payload));
@@ -1150,7 +1232,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     await listen('ipc-confirmation-list', (e) => renderPermissionList(e.payload));
     await listen('ipc-session-list', (e) => {
         renderSessionList(e.payload);
-        if (currentSessionId === null && e.payload.length > 0) {
+        // A guest may not switch sessions; it follows the host's current one.
+        if (currentSessionId === null && e.payload.length > 0 && role !== 'guest') {
             switchToSession(e.payload[0].id);
         }
     });
@@ -1161,8 +1244,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         // (or updated_at reordering) shows up in the sidebar immediately.
         invoke('list_sessions');
     });
-    await listen('ipc-session-error', (e) => window.alert('Session error: ' + e.payload));
-    await listen('ipc-error', (e) => window.alert('JARVIS error: ' + e.payload));
+    await listen('ipc-session-error', (e) => showNotice('Session error: ' + e.payload));
+    await listen('ipc-error', (e) => showNotice(e.payload));
     await listen('ipc-settings', (e) => applySettings(e.payload));
     await listen('ipc-provider-list', (e) => {
         renderProviderList(e.payload);
@@ -1183,6 +1266,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             showSettingsError(e.payload.message);
         }
     });
+
+    if (!IS_DESKTOP) {
+        setStatus('offline');
+        window.JarvisTransport.connect();
+        return;
+    }
 
     // Listeners are now registered, but the backend's IPC poll thread may have
     // already emitted ipc-connected/ipc-state before this point (Tauri does not
