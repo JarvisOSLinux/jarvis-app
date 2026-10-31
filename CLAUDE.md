@@ -334,6 +334,8 @@ cargo tauri build
 
 Dark navy (`#0a0e1a`) + JARVIS cyan (`#00c8ff`). Monospace font: Hack/JetBrains Mono.
 
+Icons are one line set: `<symbol id="i-<name>">` entries in the sprite at the top of `src/index.html`, drawn with `stroke: currentColor` by the `.icon` class (20px; 22px in the header, 16px in list rows). Static buttons write `<svg class="icon"><use href="#i-<name>"/></svg>`; `main.js` uses `icon('<name>')`. No emoji or text glyphs as button icons: they come from whichever font the system has, so each drew at a different size (the header's ⏱ and ⚙ were about 14px next to a full-size 🔒).
+
 ## Conventions
 
 - `cargo fmt` + `cargo clippy` clean before pushing
