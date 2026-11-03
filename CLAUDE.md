@@ -98,8 +98,10 @@ error: `main.js` shows every error as an alert, and the protocol grows.
 Session CRUD (`Project-JARVIS`'s `jarvis/runtime/io.py`) is a thin wrapper
 over the existing `SessionManager` (`new_session`/`list`/`switch`/`rename`/
 `delete`) -- no separate storage on the GUI socket side. `switch_session`
-returns the session plus its `conversation_log` history as
-`{role, content, timestamp}` messages so a client can render it immediately.
+returns the session plus its history as `{role, content, timestamp}` messages
+(a comment marked `comment: true`) and its action blocks as `role: "action"`
+messages, so a client can render the chat as it looked live
+(`restoreSessionMessages`; a block still running stays open for its live end).
 Session mutations (create/switch/rename/delete) broadcast to every connected
 GUI client, since there's one shared "current session" pointer on the
 daemon; `list_sessions` and errors reply to the requester only.
