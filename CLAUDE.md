@@ -69,13 +69,12 @@ platform, not just compiled for Windows).
                       `stop_stream`, `confirmation_response`, `ping`,
                       `list_sessions`, `create_session`, `switch_session`,
                       `rename_session`, `delete_session`,
-                      `set_wake_chime_path`, `reset_wake_chime_path`,
-                      `get_settings`, `set_confirmation_mode`,
-                      `list_providers`, `add_provider`, `edit_provider`,
-                      `remove_provider`, `move_provider`, `list_clients`,
-                      `shutdown_request`, `get_status` (the daemon's health
-                      check; the Tauri command is `get_health`, since this
-                      app's own `get_status` reports the connection),
+                      `get_settings`, `set_setting`, `list_providers`,
+                      `add_provider`, `edit_provider`, `remove_provider`,
+                      `move_provider`, `list_clients`, `shutdown_request`,
+                      `get_status` (the daemon's health check; the Tauri
+                      command is `get_health`, since this app's own
+                      `get_status` reports the connection),
                       `list_work`, `stop`, `stop_all`, `stop_task`
                       (Project-JARVIS#270), and `hello` (sent first on every
                       connection: label `jarvis-app`, subscribing to
@@ -152,10 +151,11 @@ key theoretically exists. Implementation (`lib.rs`):
   data dir (`app_data_dir()/.wake_chime_bootstrapped`, distinct from the
   daemon's `jarvis_data_dir()` used for socket discovery) at startup. If it
   exists, nothing happens -- this really does run only once, ever.
-- If absent, the bundled resource path is resolved and `set_wake_chime_path`
-  is sent on every `Connected` event (retried across reconnects) until a
-  `config_updated` response for `WAKE_CHIME_PATH` confirms success, at which
-  point the marker is written and the poll loop stops sending it.
+- If absent, the bundled resource path is resolved and `set_setting`
+  (`WAKE_CHIME_PATH`) is sent on every `Connected` event (retried across
+  reconnects) until a `config_updated` response for `WAKE_CHIME_PATH`
+  confirms success, at which point the marker is written and the poll loop
+  stops sending it.
 - A `config_error` response is logged and left to retry on the next
   reconnect/app launch -- a daemon that's merely offline on first launch
   shouldn't silently skip the bootstrap forever.
@@ -168,11 +168,19 @@ key theoretically exists. Implementation (`lib.rs`):
 A centered modal (`#settings-btn` in the header) with two tabs:
 
 - **General** -- voice-activation toggle (an alias for the same
-  `toggle_listening` command the mic button uses), confirmation mode
-  (`smart`/`ask_all`/`allow_all`), wake sound (native file picker via
-  `tauri-plugin-dialog`'s `pick_wake_chime_file`, or "Restore default" via
-  `reset_wake_chime_path`), and a read-only socket path for troubleshooting
-  (`get_connection_info` -- local only, never round-trips to the daemon).
+  `toggle_listening` command the mic button uses), then JARVIS's own
+  settings, drawn from the list `get_settings` returns
+  (Project-JARVIS's `jarvis/core/settings.py`, the same list its TUI's
+  settings window draws): one group per section, `Advanced` folded, a
+  control per kind (select, checkbox, number, and for the wake sound the
+  native file picker `pick_wake_chime_file` or "Restore default", which sends
+  an empty value). Each control sends `set_setting {key, value}`; JARVIS
+  checks it and answers `config_updated` (to every client, shown in place) or
+  `config_error` (shown in the panel, and the panel is fetched again so the
+  refused control shows what JARVIS still runs with). A setting the list
+  gains shows up here with no change to this app. Last, a read-only socket
+  path for troubleshooting (`get_connection_info` -- local only, never
+  round-trips to the daemon).
 - **Providers** -- list/add/edit/remove backed by the daemon's
   `jarvis/core/providers.py` CRUD (shared with the TUI's own config modal).
   **Provider changes only take effect on the daemon's next restart** -- there
@@ -183,8 +191,8 @@ A centered modal (`#settings-btn` in the header) with two tabs:
 bootstrap above, but were previously consumed only internally by the poll
 loop -- never forwarded to the frontend. They're now also emitted as
 `ipc-config-updated`/`ipc-config-error` unconditionally, so the settings
-panel can reflect a `CONFIRMATION_MODE` or `WAKE_CHIME_PATH` write from
-*any* source (including another connected client), not just its own.
+panel can reflect a setting changed from *any* source (another connected
+client, or the TUI), not just its own.
 
 ### Graceful daemon shutdown (Project-JARVIS#146 / jarvisos-app#17)
 
@@ -301,9 +309,9 @@ and appearance-override controls.
 | `approve_confirmation`          | `ipc-confirm` `{id, tool_names}` |
 | `deny_confirmation`             | `ipc-confirmation-list` `[{id, tool_names, created_at}]` |
 | `approve_all_confirmations`     |                          |
-| `get_settings`                  | `ipc-settings` `{confirmation_mode, wake_chime_path}` |
-| `set_confirmation_mode`         | `ipc-config-updated` `{key, value}` |
-| `reset_wake_chime_path`         | `ipc-config-error` `{key, message}` |
+| `get_settings`                  | `ipc-settings` `[{key, label, section, kind, value, options?, min?, max?, hint?}]` |
+| `set_setting(key, value)`       | `ipc-config-updated` `{key, value}` |
+|                                 | `ipc-config-error` `{key, message}` |
 | `list_providers` / `add_provider` / `edit_provider` / `remove_provider` | `ipc-provider-list` `[{name, type, model, ...}]` |
 | `pick_wake_chime_file` (native file dialog, no daemon round-trip) | `ipc-provider-error` (string) |
 | `get_connection_info` (local socket path, no daemon round-trip) | |
