@@ -313,15 +313,9 @@ struct SessionSwitchedPayload {
 }
 
 #[derive(Serialize, Clone)]
-struct SettingsPayload {
-    confirmation_mode: String,
-    wake_chime_path: String,
-}
-
-#[derive(Serialize, Clone)]
 struct ConfigUpdatedPayload {
     key: String,
-    value: String,
+    value: serde_json::Value,
 }
 
 #[derive(Serialize, Clone)]
@@ -442,14 +436,11 @@ fn get_connection_info() -> String {
     ipc::socket_path()
 }
 
+/// Any setting in JARVIS's list (`get_settings`); JARVIS checks the value and
+/// answers `config_updated` or `config_error`.
 #[tauri::command]
-fn set_confirmation_mode(mode: String, state: State<AppState>) {
-    state.ipc.lock().unwrap().set_confirmation_mode(mode);
-}
-
-#[tauri::command]
-fn reset_wake_chime_path(state: State<AppState>) {
-    state.ipc.lock().unwrap().reset_wake_chime_path();
+fn set_setting(key: String, value: serde_json::Value, state: State<AppState>) {
+    state.ipc.lock().unwrap().set_setting(key, value);
 }
 
 #[tauri::command]
@@ -820,8 +811,7 @@ pub fn run() {
             delete_session,
             get_settings,
             get_connection_info,
-            set_confirmation_mode,
-            reset_wake_chime_path,
+            set_setting,
             list_providers,
             add_provider,
             edit_provider,
@@ -870,7 +860,9 @@ fn poll_loop(
                     // Retried on every (re)connect until config_updated
                     // confirms it -- see the ConfigUpdated/ConfigError arms.
                     if let Some((path, _)) = &wake_chime_bootstrap {
-                        ipc.lock().unwrap().set_wake_chime_path(path.clone());
+                        ipc.lock()
+                            .unwrap()
+                            .set_setting("WAKE_CHIME_PATH".into(), path.clone().into());
                     }
                 }
                 IpcEvent::Disconnected => {
@@ -981,17 +973,8 @@ fn poll_loop(
                 IpcEvent::SessionError(message) => {
                     let _ = app.emit("ipc-session-error", message);
                 }
-                IpcEvent::Settings {
-                    confirmation_mode,
-                    wake_chime_path,
-                } => {
-                    let _ = app.emit(
-                        "ipc-settings",
-                        SettingsPayload {
-                            confirmation_mode,
-                            wake_chime_path,
-                        },
-                    );
+                IpcEvent::Settings(settings) => {
+                    let _ = app.emit("ipc-settings", settings);
                 }
                 IpcEvent::ProviderList(providers) => {
                     let _ = app.emit("ipc-provider-list", providers);

@@ -151,9 +151,10 @@ pub enum IpcEvent {
         message: String,
         for_request: Option<String>,
     },
+    /// A setting changed (`value` typed as JARVIS applied it), from any client.
     ConfigUpdated {
         key: String,
-        value: String,
+        value: serde_json::Value,
     },
     ConfigError {
         key: String,
@@ -166,10 +167,9 @@ pub enum IpcEvent {
         messages: Vec<serde_json::Value>,
     },
     SessionError(String),
-    Settings {
-        confirmation_mode: String,
-        wake_chime_path: String,
-    },
+    /// Every setting JARVIS can change while it runs, with its current
+    /// value: the list the TUI's settings window draws too.
+    Settings(Vec<serde_json::Value>),
     ProviderList(Vec<serde_json::Value>),
     ProviderError(String),
     ClientList(Vec<String>),
@@ -203,10 +203,6 @@ pub enum IpcCommand {
         approved_indices: Vec<usize>,
     },
     ApproveAllConfirmations,
-    SetWakeChimePath {
-        path: String,
-    },
-    ResetWakeChimePath,
     ListSessions,
     CreateSession {
         title: Option<String>,
@@ -222,8 +218,9 @@ pub enum IpcCommand {
         id: String,
     },
     GetSettings,
-    SetConfirmationMode {
-        mode: String,
+    SetSetting {
+        key: String,
+        value: serde_json::Value,
     },
     ListProviders,
     AddProvider {
@@ -338,22 +335,12 @@ impl IpcClient {
         let _ = self.command_tx.send(IpcCommand::ApproveAllConfirmations);
     }
 
-    pub fn set_wake_chime_path(&self, path: String) {
-        let _ = self.command_tx.send(IpcCommand::SetWakeChimePath { path });
-    }
-
-    pub fn reset_wake_chime_path(&self) {
-        let _ = self.command_tx.send(IpcCommand::ResetWakeChimePath);
-    }
-
     pub fn get_settings(&self) {
         let _ = self.command_tx.send(IpcCommand::GetSettings);
     }
 
-    pub fn set_confirmation_mode(&self, mode: String) {
-        let _ = self
-            .command_tx
-            .send(IpcCommand::SetConfirmationMode { mode });
+    pub fn set_setting(&self, key: String, value: serde_json::Value) {
+        let _ = self.command_tx.send(IpcCommand::SetSetting { key, value });
     }
 
     pub fn list_providers(&self) {
@@ -605,25 +592,14 @@ fn run_connected(
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
-            Ok(IpcCommand::SetWakeChimePath { path }) => {
-                let msg = format!(
-                    "{}\n",
-                    serde_json::json!({"type":"set_wake_chime_path","path":path})
-                );
-                let _ = write_stream.write_all(msg.as_bytes());
-            }
-            Ok(IpcCommand::ResetWakeChimePath) => {
-                let msg = format!("{}\n", serde_json::json!({"type":"reset_wake_chime_path"}));
-                let _ = write_stream.write_all(msg.as_bytes());
-            }
             Ok(IpcCommand::GetSettings) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"get_settings"}));
                 let _ = write_stream.write_all(msg.as_bytes());
             }
-            Ok(IpcCommand::SetConfirmationMode { mode }) => {
+            Ok(IpcCommand::SetSetting { key, value }) => {
                 let msg = format!(
                     "{}\n",
-                    serde_json::json!({"type":"set_confirmation_mode","mode":mode})
+                    serde_json::json!({"type":"set_setting","key":key,"value":value})
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
@@ -820,9 +796,8 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .to_string(),
             value: value
                 .get("value")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
         },
         Some("config_error") => IpcEvent::ConfigError {
             key: value
@@ -879,18 +854,13 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .unwrap_or("Unknown session error")
                 .to_string(),
         ),
-        Some("settings") => IpcEvent::Settings {
-            confirmation_mode: value
-                .get("confirmation_mode")
-                .and_then(|v| v.as_str())
-                .unwrap_or("smart")
-                .to_string(),
-            wake_chime_path: value
-                .get("wake_chime_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-        },
+        Some("settings") => IpcEvent::Settings(
+            value
+                .get("settings")
+                .and_then(|s| s.as_array())
+                .cloned()
+                .unwrap_or_default(),
+        ),
         Some("provider_list") => IpcEvent::ProviderList(
             value
                 .get("providers")
@@ -1342,10 +1312,10 @@ mod tests {
             _ => unreachable!(),
         }
 
-        client.set_wake_chime_path("/tmp/my-chime.wav".into());
+        client.set_setting("WAKE_CHIME_PATH".into(), "/tmp/my-chime.wav".into());
         assert_eq!(
             read_line(&mut reader),
-            serde_json::json!({"type": "set_wake_chime_path", "path": "/tmp/my-chime.wav"})
+            serde_json::json!({"type": "set_setting", "key": "WAKE_CHIME_PATH", "value": "/tmp/my-chime.wav"})
         );
 
         write_half
@@ -1356,7 +1326,7 @@ mod tests {
         match wait_for_event(&client, |e| matches!(e, IpcEvent::ConfigUpdated { .. })) {
             IpcEvent::ConfigUpdated { key, value } => {
                 assert_eq!(key, "WAKE_CHIME_PATH");
-                assert_eq!(value, "/tmp/my-chime.wav");
+                assert_eq!(value, serde_json::json!("/tmp/my-chime.wav"));
             }
             _ => unreachable!(),
         }
@@ -1406,30 +1376,29 @@ mod tests {
 
         write_half
             .write_all(
-                b"{\"type\":\"settings\",\"confirmation_mode\":\"smart\",\"wake_chime_path\":\"/x.wav\"}\n",
+                b"{\"type\":\"settings\",\"settings\":[{\"key\":\"RAG_TOP_K\",\"kind\":\"int\",\"value\":5}]}\n",
             )
             .unwrap();
-        match wait_for_event(&client, |e| matches!(e, IpcEvent::Settings { .. })) {
-            IpcEvent::Settings {
-                confirmation_mode,
-                wake_chime_path,
-            } => {
-                assert_eq!(confirmation_mode, "smart");
-                assert_eq!(wake_chime_path, "/x.wav");
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::Settings(_))) {
+            IpcEvent::Settings(list) => {
+                assert_eq!(
+                    list,
+                    vec![serde_json::json!({"key": "RAG_TOP_K", "kind": "int", "value": 5})]
+                );
             }
             _ => unreachable!(),
         }
 
-        client.set_confirmation_mode("ask_all".into());
+        client.set_setting("CONFIRMATION_MODE".into(), "ask_all".into());
         assert_eq!(
             read_line(&mut reader),
-            serde_json::json!({"type": "set_confirmation_mode", "mode": "ask_all"})
+            serde_json::json!({"type": "set_setting", "key": "CONFIRMATION_MODE", "value": "ask_all"})
         );
 
-        client.reset_wake_chime_path();
+        client.set_setting("VOICE_SPEAK_COMMENTS".into(), false.into());
         assert_eq!(
             read_line(&mut reader),
-            serde_json::json!({"type": "reset_wake_chime_path"})
+            serde_json::json!({"type": "set_setting", "key": "VOICE_SPEAK_COMMENTS", "value": false})
         );
 
         client.get_health(true);
