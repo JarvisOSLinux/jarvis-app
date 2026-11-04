@@ -1291,6 +1291,15 @@ details.action-block[open] > summary::before { content: '▾'; }
 details.action-block > summary:hover { background: var(--card); }
 
 .action-title { color: var(--text-primary); overflow-wrap: anywhere; }
+.action-brief {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+details.action-block[open] .action-brief { visibility: hidden; }
 .action-time { margin-left: auto; white-space: nowrap; }
 .action-mark { white-space: nowrap; }
 .action-mark.running { color: #ffaa00; }
@@ -1304,6 +1313,7 @@ details.action-block > summary:hover { background: var(--card); }
     font-family: var(--font-mono);
     font-size: 11px;
     overflow-wrap: anywhere;
+    white-space: pre-wrap; /* a script reads as typed, one line per line */
 }
 
 .action-output {

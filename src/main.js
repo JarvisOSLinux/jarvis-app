@@ -499,8 +499,10 @@ function onAction(ev) {
         const summary = el('summary');
         const mark = el('span');
         const title = el('span', 'action-title', ev.title || '');
+        // What ran, on the folded line too (the command, not just the tool).
+        const brief = el('span', 'action-brief', (ev.detail || '').split('\n')[0]);
         const time = el('span', 'action-time');
-        summary.append(mark, title, time);
+        summary.append(mark, title, brief, time);
         summary.addEventListener('click', () => { block.dataset.touched = '1'; });
         const detail = el('div', 'action-detail', ev.detail || '');
         detail.hidden = !ev.detail;
