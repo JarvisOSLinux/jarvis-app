@@ -904,6 +904,9 @@ fn poll_loop(
                 IpcEvent::Action(event) => {
                     let _ = app.emit("ipc-action", event);
                 }
+                IpcEvent::UserMessage(said) => {
+                    let _ = app.emit("ipc-user-message", said);
+                }
                 IpcEvent::Health(sections) => {
                     let _ = app.emit("ipc-health", sections);
                 }

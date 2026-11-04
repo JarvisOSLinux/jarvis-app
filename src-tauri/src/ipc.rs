@@ -129,6 +129,9 @@ pub enum IpcEvent {
     },
     /// What JARVIS is doing at this moment (Project-JARVIS#267).
     Activity(String),
+    /// What the user said on another screen, in the TUI or aloud:
+    /// `{content, at}`. This app draws its own messages when it sends them.
+    UserMessage(serde_json::Value),
     /// A start, update or end of something JARVIS did (Project-JARVIS#271),
     /// passed to the page as the daemon sent it.
     Action(serde_json::Value),
@@ -715,7 +718,7 @@ fn hello_message() -> serde_json::Value {
     serde_json::json!({
         "type": "hello",
         "label": "jarvis-app",
-        "subscribe": ["activity", "action"],
+        "subscribe": ["activity", "action", "user_message"],
     })
 }
 
@@ -752,6 +755,7 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .to_string(),
         ),
         Some("action") => IpcEvent::Action(value),
+        Some("user_message") => IpcEvent::UserMessage(value),
         Some("status") => IpcEvent::Health(
             value
                 .get("sections")
@@ -1028,9 +1032,22 @@ mod new_message_tests {
             serde_json::json!({
                 "type": "hello",
                 "label": "jarvis-app",
-                "subscribe": ["activity", "action"],
+                "subscribe": ["activity", "action", "user_message"],
             })
         );
+    }
+
+    #[test]
+    fn what_was_said_elsewhere_is_passed_on() {
+        match parse_daemon_message(
+            r#"{"type":"user_message","content":"Update my system","at":1762200000.5}"#,
+        ) {
+            IpcEvent::UserMessage(value) => {
+                assert_eq!(value["content"], "Update my system");
+                assert_eq!(value["at"], 1762200000.5);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

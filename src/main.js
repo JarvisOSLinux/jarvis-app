@@ -1327,6 +1327,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     await listen('ipc-state',        (e)     => setStatus(e.payload));
     await listen('ipc-chunk',        (e)     => appendJarvisChunk(e.payload.content, e.payload.done, e.payload.comment));
     await listen('ipc-activity',     (e)     => showActivity(e.payload));
+    // Said on another screen, in the TUI or aloud; this one drew its own.
+    await listen('ipc-user-message', (e)     => addUserMessage(e.payload.content || '', e.payload.at));
     await listen('ipc-action',       (e)     => onAction(e.payload));
     await listen('ipc-work',         (e)     => renderWork(e.payload || {}));
     await listen('ipc-health',       (e)     => renderStatus(e.payload));
