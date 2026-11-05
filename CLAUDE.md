@@ -78,7 +78,7 @@ platform, not just compiled for Windows).
                       `list_work`, `stop`, `stop_all`, `stop_task`
                       (Project-JARVIS#270), and `hello` (sent first on every
                       connection: label `jarvis-app`, subscribing to
-                      `activity` and `action`)
+                      `activity`, `action` and `user_message`)
 **Daemon -> Client**: `state`, `response` (streaming; `comment: true` marks
                       a sentence of what JARVIS is about to do, after which
                       the state stays busy), `wake_word_detected`,
@@ -88,7 +88,9 @@ platform, not just compiled for Windows).
                       `provider_list`, `provider_error`, `client_list`,
                       `DAEMON_SHUTDOWN`, and the Project-JARVIS#267 additions:
                       `activity` and `action` (pushed, since this app
-                      subscribes), `status` and `work` (replies)
+                      subscribes), `status` and `work` (replies), and
+                      `user_message` (what the user said on another screen,
+                      in the TUI or aloud; drawn like a typed message)
 
 The full protocol is Project-JARVIS's `docs/gui-protocol.md`. A message type
 this app does not know is ignored (`IpcEvent::Ignored`), not raised as an
