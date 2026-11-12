@@ -1096,7 +1096,7 @@ function showProviderHints() {
     providerFormUrl.placeholder = hints.url;
     const editing = cachedProviders.find((p) => p.name === editingProviderName);
     providerFormKey.placeholder = editing && hasKey(editing)
-        ? 'A key is saved; type a new one to replace it'
+        ? 'A key is saved; type a new one to replace it (another host needs its own)'
         : hints.key;
 }
 
