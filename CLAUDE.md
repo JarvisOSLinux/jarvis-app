@@ -127,12 +127,17 @@ on a hand edit). So a UI change is made here, once, and synced there.
 commands to socket messages over the gateway's WebSocket and turns replies
 into the same events with the same payloads (`get_status`, the connection
 check, is answered locally). `main.js` reads `JarvisTransport.kind`:
-- `body.desktop` or `body.web`; controls marked `desktop-only` (settings,
-  providers, widgets, the mic, Approve All) are hidden in a browser, where
-  the gateway would refuse them anyway.
+- `body.desktop` or `body.web`; controls marked `desktop-only` (widgets,
+  the wake-sound file picker, the socket path, "quit this app", shutting
+  JARVIS down) are hidden in a browser, where the gateway refuses them anyway.
 - the desktop user is the owner (`can-approve`, `can-manage`); a browser
-  takes its role from the gateway's `gateway` frame, and a guest neither
-  approves, manages sessions, nor switches the host's session.
+  takes its role from the gateway's `gateway` frame. The owner's phone is
+  this app (jarvis-app#40): settings, providers, Approve All and the wake
+  word. A guest neither approves, manages sessions, nor switches the host's
+  session.
+- Approve All sends the ids the panel shows (`approve_all_confirmations
+  {ids}`), so a request that came in after the list was drawn is not
+  approved blind; the gateway refuses it without them.
 
 Stop (Project-JARVIS#270): the ■ button stops JARVIS's work in the session
 (lit while it works), Stop all in the ⏱ panel also ends the running tasks,
@@ -185,9 +190,10 @@ A centered modal (`#settings-btn` in the header) with two tabs:
   round-trips to the daemon).
 - **Providers** -- list/add/edit/remove backed by the daemon's
   `jarvis/core/providers.py` CRUD (shared with the TUI's own config modal).
-  **Provider changes only take effect on the daemon's next restart** -- there
-  is no live `ProviderPool` reload, matching the TUI's own limitation; the
-  panel says so rather than implying an instant effect.
+  A change applies from JARVIS's next request (Project-JARVIS#315 reloads
+  `providers.json` live). A phone is told whether a provider has a key
+  (`api_key_set`), never the key; moving a provider to another host without
+  typing a key removes the stored one (Project-JARVIS `edit_provider`).
 
 `ConfigUpdated`/`ConfigError` (`ipc.rs`) already existed for the wake-chime
 bootstrap above, but were previously consumed only internally by the poll
@@ -310,7 +316,7 @@ and appearance-override controls.
 | `list_confirmations`            | `ipc-wake`               |
 | `approve_confirmation`          | `ipc-confirm` `{id, tool_names}` |
 | `deny_confirmation`             | `ipc-confirmation-list` `[{id, tool_names, created_at}]` |
-| `approve_all_confirmations`     |                          |
+| `approve_all_confirmations(ids)` |                         |
 | `get_settings`                  | `ipc-settings` `[{key, label, section, kind, value, options?, min?, max?, hint?}]` |
 | `set_setting(key, value)`       | `ipc-config-updated` `{key, value}` |
 |                                 | `ipc-config-error` `{key, message}` |

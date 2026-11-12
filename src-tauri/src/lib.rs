@@ -394,8 +394,8 @@ fn partial_approve_confirmation(id: String, approved_indices: Vec<usize>, state:
 }
 
 #[tauri::command]
-fn approve_all_confirmations(state: State<AppState>) {
-    state.ipc.lock().unwrap().approve_all_confirmations();
+fn approve_all_confirmations(ids: Vec<String>, state: State<AppState>) {
+    state.ipc.lock().unwrap().approve_all_confirmations(ids);
 }
 
 #[tauri::command]

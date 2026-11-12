@@ -205,7 +205,11 @@ pub enum IpcCommand {
         id: String,
         approved_indices: Vec<usize>,
     },
-    ApproveAllConfirmations,
+    /// The ids the permission panel shows: a request that came in after it
+    /// was drawn is not approved with them.
+    ApproveAllConfirmations {
+        ids: Vec<String>,
+    },
     ListSessions,
     CreateSession {
         title: Option<String>,
@@ -334,8 +338,10 @@ impl IpcClient {
             });
     }
 
-    pub fn approve_all_confirmations(&self) {
-        let _ = self.command_tx.send(IpcCommand::ApproveAllConfirmations);
+    pub fn approve_all_confirmations(&self, ids: Vec<String>) {
+        let _ = self
+            .command_tx
+            .send(IpcCommand::ApproveAllConfirmations { ids });
     }
 
     pub fn get_settings(&self) {
@@ -588,10 +594,10 @@ fn run_connected(
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
-            Ok(IpcCommand::ApproveAllConfirmations) => {
+            Ok(IpcCommand::ApproveAllConfirmations { ids }) => {
                 let msg = format!(
                     "{}\n",
-                    serde_json::json!({"type":"approve_all_confirmations"})
+                    serde_json::json!({"type":"approve_all_confirmations","ids":ids})
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
@@ -1268,10 +1274,10 @@ mod tests {
             })
         );
 
-        client.approve_all_confirmations();
+        client.approve_all_confirmations(vec!["req1".into(), "req2".into()]);
         assert_eq!(
             read_line(&mut reader),
-            serde_json::json!({"type": "approve_all_confirmations"})
+            serde_json::json!({"type": "approve_all_confirmations", "ids": ["req1", "req2"]})
         );
 
         write_half
