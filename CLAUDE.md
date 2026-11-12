@@ -150,6 +150,19 @@ an `ack` whose `for` names the request; only a stop's reply is shown, so a
 confirmation decided does not add a line. Errors show in a banner above the
 input instead of an alert.
 
+### Permission requests pop up
+
+A request the page has not shown yet opens as `#approval-modal` for anyone who
+may approve (`can-approve`): the panel's own card (`buildPermissionItem`:
+the command, Approve, Deny, per-task choices for a batch), "N more waiting",
+and Later (also Escape or a tap outside), which leaves it in Permission
+Requests and shows the next unseen one. Requests already waiting when the
+page opens pop up too. It is driven by the `confirmation_list` the daemon
+sends (`syncApprovalPopup` in `renderPermissionList`), closes when the
+request is answered here or on another screen, takes no focus so Enter in
+the chat never approves, reopens after a dropped connection, and sits under
+the sudo password popup. A phone vibrates when it opens.
+
 ### sudo password popup (Project-JARVIS#310)
 
 With JARVIS's `SUDO_PASSWORD_POPUP` setting on (Linux; off by default; the
