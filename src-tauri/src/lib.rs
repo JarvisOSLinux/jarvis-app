@@ -449,6 +449,16 @@ fn list_providers(state: State<AppState>) {
 }
 
 #[tauri::command]
+fn list_models(url: Option<String>, api_key: Option<String>, state: State<AppState>) {
+    state.ipc.lock().unwrap().list_models(url, api_key);
+}
+
+#[tauri::command]
+fn pull_model(model: String, url: Option<String>, api_key: Option<String>, state: State<AppState>) {
+    state.ipc.lock().unwrap().pull_model(model, url, api_key);
+}
+
+#[tauri::command]
 fn move_provider(name: String, position: usize, state: State<AppState>) {
     state.ipc.lock().unwrap().move_provider(name, position);
 }
@@ -843,6 +853,8 @@ pub fn run() {
             edit_provider,
             remove_provider,
             move_provider,
+            list_models,
+            pull_model,
             get_health,
             list_work,
             stop,
@@ -1013,6 +1025,12 @@ fn poll_loop(
                 }
                 IpcEvent::ProviderError(message) => {
                     let _ = app.emit("ipc-provider-error", message);
+                }
+                IpcEvent::ModelList(list) => {
+                    let _ = app.emit("ipc-model-list", list);
+                }
+                IpcEvent::ModelPull(step) => {
+                    let _ = app.emit("ipc-model-pull", step);
                 }
                 IpcEvent::ClientList(clients) => {
                     let _ = app.emit("ipc-client-list", clients);
