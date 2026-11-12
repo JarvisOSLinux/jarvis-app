@@ -175,6 +175,11 @@ pub enum IpcEvent {
     Settings(Vec<serde_json::Value>),
     ProviderList(Vec<serde_json::Value>),
     ProviderError(String),
+    /// Models an Ollama server offers (`model_list`), whole, with its `error`
+    /// when the server could not be asked.
+    ModelList(serde_json::Value),
+    /// One step of a model download (`model_pull`), whole.
+    ModelPull(serde_json::Value),
     ClientList(Vec<String>),
     /// JARVIS asks for the sudo password (`password_request`, Project-JARVIS
     /// #310), whole: id, the command sudo will run, which try it is.
@@ -236,6 +241,15 @@ pub enum IpcCommand {
         value: serde_json::Value,
     },
     ListProviders,
+    ListModels {
+        url: Option<String>,
+        api_key: Option<String>,
+    },
+    PullModel {
+        model: String,
+        url: Option<String>,
+        api_key: Option<String>,
+    },
     AddProvider {
         ptype: String,
         model: String,
@@ -368,6 +382,20 @@ impl IpcClient {
 
     pub fn list_providers(&self) {
         let _ = self.command_tx.send(IpcCommand::ListProviders);
+    }
+
+    pub fn list_models(&self, url: Option<String>, api_key: Option<String>) {
+        let _ = self
+            .command_tx
+            .send(IpcCommand::ListModels { url, api_key });
+    }
+
+    pub fn pull_model(&self, model: String, url: Option<String>, api_key: Option<String>) {
+        let _ = self.command_tx.send(IpcCommand::PullModel {
+            model,
+            url,
+            api_key,
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -643,6 +671,29 @@ fn run_connected(
             }
             Ok(IpcCommand::ListProviders) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"list_providers"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::ListModels { url, api_key }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"list_models","url":url,"api_key":api_key})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::PullModel {
+                model,
+                url,
+                api_key,
+            }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "type": "pull_model",
+                        "model": model,
+                        "url": url,
+                        "api_key": api_key,
+                    })
+                );
                 let _ = write_stream.write_all(msg.as_bytes());
             }
             Ok(IpcCommand::AddProvider {
@@ -948,6 +999,8 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .unwrap_or("Unknown provider error")
                 .to_string(),
         ),
+        Some("model_list") => IpcEvent::ModelList(value.clone()),
+        Some("model_pull") => IpcEvent::ModelPull(value.clone()),
         Some("password_request") => IpcEvent::PasswordRequest(value.clone()),
         Some("password_request_done") => IpcEvent::PasswordDone(value.clone()),
         Some("client_list") => IpcEvent::ClientList(
@@ -1205,6 +1258,14 @@ mod new_message_tests {
             r#"{"type":"status","full":false,"sections":[{"title":"Engines","checks":[]}]}"#,
         ) {
             IpcEvent::Health(sections) => assert_eq!(sections[0]["title"], "Engines"),
+            other => panic!("{other:?}"),
+        }
+        match parse_daemon_message(r#"{"type":"model_list","models":[{"name":"a"}]}"#) {
+            IpcEvent::ModelList(v) => assert_eq!(v["models"][0]["name"], "a"),
+            other => panic!("{other:?}"),
+        }
+        match parse_daemon_message(r#"{"type":"model_pull","model":"a","done":true}"#) {
+            IpcEvent::ModelPull(v) => assert_eq!(v["done"], true),
             other => panic!("{other:?}"),
         }
         match parse_daemon_message(r#"{"type":"work","work":{"tasks":[],"thinking":1}}"#) {
