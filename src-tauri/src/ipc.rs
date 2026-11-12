@@ -252,6 +252,7 @@ pub enum IpcCommand {
         name: String,
     },
     ListClients,
+    ListPasswordRequests,
     AnswerPassword {
         id: String,
         password: Secret,
@@ -401,6 +402,10 @@ impl IpcClient {
 
     pub fn list_clients(&self) {
         let _ = self.command_tx.send(IpcCommand::ListClients);
+    }
+
+    pub fn list_password_requests(&self) {
+        let _ = self.command_tx.send(IpcCommand::ListPasswordRequests);
     }
 
     pub fn answer_password(&self, id: String, password: String) {
@@ -678,6 +683,10 @@ fn run_connected(
             }
             Ok(IpcCommand::ListClients) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"list_clients"}));
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::ListPasswordRequests) => {
+                let msg = format!("{}\n", serde_json::json!({"type":"list_password_requests"}));
                 let _ = write_stream.write_all(msg.as_bytes());
             }
             Ok(IpcCommand::AnswerPassword { id, password }) => {
@@ -1629,6 +1638,11 @@ mod tests {
             serde_json::json!({"type": "list_clients"})
         );
 
+        client.list_password_requests();
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "list_password_requests"})
+        );
         client.answer_password("r1".into(), "hunter2".into());
         assert_eq!(
             read_line(&mut reader),

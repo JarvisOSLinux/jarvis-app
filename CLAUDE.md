@@ -152,18 +152,26 @@ input instead of an alert.
 
 ### sudo password popup (Project-JARVIS#310)
 
-With JARVIS's `SUDO_PASSWORD_POPUP` setting on (Linux; off by default, turned
-on at the laptop only), a root command elevates through `sudo -A` and JARVIS
+With JARVIS's `SUDO_PASSWORD_POPUP` setting on (Linux; off by default; the
+laptop or the owner's phone turns it on), a root command elevates through `sudo -A` and JARVIS
 asks for the password here instead of polkit's dialog on the host:
 `password_request {id, command, attempt}` opens `#password-modal` for anyone
 who may approve (`can-approve`: the desktop, owner and trusted phones), with
 sudo's own command line as JARVIS read it. The typed password goes out as
 `password_response {id, password}` (`answer_password`) and the field is
 cleared at once; Cancel sends `password_cancel` (`cancel_password`).
-`password_request_done` closes it on every screen; a wrong password comes
-back as a new request with `attempt` 2, and the popup says so. Escape does not
-close it (a cancel can count as a failed try for `pam_faillock`). The Rust
-side keeps the password in `ipc::Secret`, whose `Debug` never prints it.
+`password_request_done` closes it on every screen. The popup shows sudo's own
+`prompt`; a wrong password comes back as a new request with `retry: true`, and
+the popup says so, while another question from PAM (a code) shows as itself.
+JARVIS kills sudo on Cancel rather than failing its password, so a cancel is
+not a failed try; Escape still does not close it. It does not take the focus
+from a field being typed in, so a chat line cannot end up as the password.
+Tauri drops events emitted before the page listens, so the page asks for what
+waits (`list_password_requests`) on start and on reconnect. Only the main
+window gets the password events and may call `list_password_requests`,
+`answer_password` or `cancel_password` (`PASSWORD_WINDOW`): widget windows run
+third-party code. The Rust side keeps the password in `ipc::Secret`, whose
+`Debug` never prints it.
 
 ### Wake chime one-time bootstrap (Project-JARVIS#139)
 

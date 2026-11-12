@@ -530,14 +530,30 @@ fn list_clients(state: State<AppState>) {
     state.ipc.lock().unwrap().list_clients();
 }
 
+/// The sudo password commands answer only the app's own window: a widget
+/// window (third-party code, `widget-*`) may not see or answer a password
+/// request, nor cancel one, which would count as a failed sudo try.
+const PASSWORD_WINDOW: &str = "main";
+
 #[tauri::command]
-fn answer_password(id: String, password: String, state: State<AppState>) {
-    state.ipc.lock().unwrap().answer_password(id, password);
+fn list_password_requests(window: tauri::Window, state: State<AppState>) {
+    if window.label() == PASSWORD_WINDOW {
+        state.ipc.lock().unwrap().list_password_requests();
+    }
 }
 
 #[tauri::command]
-fn cancel_password(id: String, state: State<AppState>) {
-    state.ipc.lock().unwrap().cancel_password(id);
+fn answer_password(id: String, password: String, window: tauri::Window, state: State<AppState>) {
+    if window.label() == PASSWORD_WINDOW {
+        state.ipc.lock().unwrap().answer_password(id, password);
+    }
+}
+
+#[tauri::command]
+fn cancel_password(id: String, window: tauri::Window, state: State<AppState>) {
+    if window.label() == PASSWORD_WINDOW {
+        state.ipc.lock().unwrap().cancel_password(id);
+    }
 }
 
 #[tauri::command]
@@ -834,6 +850,7 @@ pub fn run() {
             stop_task,
             pick_wake_chime_file,
             list_clients,
+            list_password_requests,
             answer_password,
             cancel_password,
             request_daemon_shutdown,
@@ -1001,10 +1018,10 @@ fn poll_loop(
                     let _ = app.emit("ipc-client-list", clients);
                 }
                 IpcEvent::PasswordRequest(request) => {
-                    let _ = app.emit("ipc-password-request", request);
+                    let _ = app.emit_to(PASSWORD_WINDOW, "ipc-password-request", request);
                 }
                 IpcEvent::PasswordDone(done) => {
-                    let _ = app.emit("ipc-password-done", done);
+                    let _ = app.emit_to(PASSWORD_WINDOW, "ipc-password-done", done);
                 }
                 IpcEvent::DaemonShutdown {
                     state,
