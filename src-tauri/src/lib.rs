@@ -531,6 +531,16 @@ fn list_clients(state: State<AppState>) {
 }
 
 #[tauri::command]
+fn answer_password(id: String, password: String, state: State<AppState>) {
+    state.ipc.lock().unwrap().answer_password(id, password);
+}
+
+#[tauri::command]
+fn cancel_password(id: String, state: State<AppState>) {
+    state.ipc.lock().unwrap().cancel_password(id);
+}
+
+#[tauri::command]
 fn request_daemon_shutdown(state: State<AppState>) {
     state.ipc.lock().unwrap().request_daemon_shutdown();
 }
@@ -824,6 +834,8 @@ pub fn run() {
             stop_task,
             pick_wake_chime_file,
             list_clients,
+            answer_password,
+            cancel_password,
             request_daemon_shutdown,
             get_quit_on_daemon_shutdown,
             set_quit_on_daemon_shutdown,
@@ -987,6 +999,12 @@ fn poll_loop(
                 }
                 IpcEvent::ClientList(clients) => {
                     let _ = app.emit("ipc-client-list", clients);
+                }
+                IpcEvent::PasswordRequest(request) => {
+                    let _ = app.emit("ipc-password-request", request);
+                }
+                IpcEvent::PasswordDone(done) => {
+                    let _ = app.emit("ipc-password-done", done);
                 }
                 IpcEvent::DaemonShutdown {
                     state,

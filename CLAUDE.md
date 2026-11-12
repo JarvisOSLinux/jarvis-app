@@ -76,9 +76,12 @@ platform, not just compiled for Windows).
                       command is `get_health`, since this app's own
                       `get_status` reports the connection),
                       `list_work`, `stop`, `stop_all`, `stop_task`
-                      (Project-JARVIS#270), and `hello` (sent first on every
-                      connection: label `jarvis-app`, subscribing to
-                      `activity`, `action` and `user_message`)
+                      (Project-JARVIS#270), `password_response` /
+                      `password_cancel` (the sudo password popup), and
+                      `hello` (sent first on every connection: label
+                      `jarvis-app`, subscribing to `activity`, `action`,
+                      `user_message`, `password_request` and
+                      `password_request_done`)
 **Daemon -> Client**: `state`, `response` (streaming; `comment: true` marks
                       a sentence of what JARVIS is about to do, after which
                       the state stays busy), `wake_word_detected`,
@@ -90,7 +93,8 @@ platform, not just compiled for Windows).
                       `activity` and `action` (pushed, since this app
                       subscribes), `status` and `work` (replies), and
                       `user_message` (what the user said on another screen,
-                      in the TUI or aloud; drawn like a typed message)
+                      in the TUI or aloud; drawn like a typed message), and
+                      `password_request` / `password_request_done` (below)
 
 The full protocol is Project-JARVIS's `docs/gui-protocol.md`. A message type
 this app does not know is ignored (`IpcEvent::Ignored`), not raised as an
@@ -145,6 +149,21 @@ and each running task there has its own Stop. The daemon answers each with
 an `ack` whose `for` names the request; only a stop's reply is shown, so a
 confirmation decided does not add a line. Errors show in a banner above the
 input instead of an alert.
+
+### sudo password popup (Project-JARVIS#310)
+
+With JARVIS's `SUDO_PASSWORD_POPUP` setting on (Linux; off by default, turned
+on at the laptop only), a root command elevates through `sudo -A` and JARVIS
+asks for the password here instead of polkit's dialog on the host:
+`password_request {id, command, attempt}` opens `#password-modal` for anyone
+who may approve (`can-approve`: the desktop, owner and trusted phones), with
+sudo's own command line as JARVIS read it. The typed password goes out as
+`password_response {id, password}` (`answer_password`) and the field is
+cleared at once; Cancel sends `password_cancel` (`cancel_password`).
+`password_request_done` closes it on every screen; a wrong password comes
+back as a new request with `attempt` 2, and the popup says so. Escape does not
+close it (a cancel can count as a failed try for `pam_faillock`). The Rust
+side keeps the password in `ipc::Secret`, whose `Debug` never prints it.
 
 ### Wake chime one-time bootstrap (Project-JARVIS#139)
 

@@ -176,6 +176,12 @@ pub enum IpcEvent {
     ProviderList(Vec<serde_json::Value>),
     ProviderError(String),
     ClientList(Vec<String>),
+    /// JARVIS asks for the sudo password (`password_request`, Project-JARVIS
+    /// #310), whole: id, the command sudo will run, which try it is.
+    PasswordRequest(serde_json::Value),
+    /// That request ended (`password_request_done`): answered, cancelled,
+    /// or sudo gave up.
+    PasswordDone(serde_json::Value),
     DaemonShutdown {
         state: String,
         goals: Vec<serde_json::Value>,
@@ -246,6 +252,13 @@ pub enum IpcCommand {
         name: String,
     },
     ListClients,
+    AnswerPassword {
+        id: String,
+        password: Secret,
+    },
+    CancelPassword {
+        id: String,
+    },
     RequestDaemonShutdown,
     GetHealth {
         full: bool,
@@ -388,6 +401,17 @@ impl IpcClient {
 
     pub fn list_clients(&self) {
         let _ = self.command_tx.send(IpcCommand::ListClients);
+    }
+
+    pub fn answer_password(&self, id: String, password: String) {
+        let _ = self.command_tx.send(IpcCommand::AnswerPassword {
+            id,
+            password: Secret(password),
+        });
+    }
+
+    pub fn cancel_password(&self, id: String) {
+        let _ = self.command_tx.send(IpcCommand::CancelPassword { id });
     }
 
     pub fn request_daemon_shutdown(&self) {
@@ -656,6 +680,20 @@ fn run_connected(
                 let msg = format!("{}\n", serde_json::json!({"type":"list_clients"}));
                 let _ = write_stream.write_all(msg.as_bytes());
             }
+            Ok(IpcCommand::AnswerPassword { id, password }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"password_response","id":id,"password":password.0})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
+            Ok(IpcCommand::CancelPassword { id }) => {
+                let msg = format!(
+                    "{}\n",
+                    serde_json::json!({"type":"password_cancel","id":id})
+                );
+                let _ = write_stream.write_all(msg.as_bytes());
+            }
             Ok(IpcCommand::RequestDaemonShutdown) => {
                 let msg = format!("{}\n", serde_json::json!({"type":"shutdown_request"}));
                 let _ = write_stream.write_all(msg.as_bytes());
@@ -724,8 +762,24 @@ fn hello_message() -> serde_json::Value {
     serde_json::json!({
         "type": "hello",
         "label": "jarvis-app",
-        "subscribe": ["activity", "action", "user_message"],
+        "subscribe": [
+            "activity",
+            "action",
+            "user_message",
+            "password_request",
+            "password_request_done",
+        ],
     })
+}
+
+/// The sudo password on its way to the daemon. Its `Debug` never shows it,
+/// so no log or panic message of a command can carry it.
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(..)")
+    }
 }
 
 fn parse_daemon_message(line: &str) -> IpcEvent {
@@ -885,6 +939,8 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .unwrap_or("Unknown provider error")
                 .to_string(),
         ),
+        Some("password_request") => IpcEvent::PasswordRequest(value.clone()),
+        Some("password_request_done") => IpcEvent::PasswordDone(value.clone()),
         Some("client_list") => IpcEvent::ClientList(
             value
                 .get("clients")
@@ -1038,9 +1094,43 @@ mod new_message_tests {
             serde_json::json!({
                 "type": "hello",
                 "label": "jarvis-app",
-                "subscribe": ["activity", "action", "user_message"],
+                "subscribe": [
+                    "activity",
+                    "action",
+                    "user_message",
+                    "password_request",
+                    "password_request_done",
+                ],
             })
         );
+    }
+
+    #[test]
+    fn a_password_never_shows_in_debug_output() {
+        let cmd = IpcCommand::AnswerPassword {
+            id: "r1".into(),
+            password: Secret("hunter2".into()),
+        };
+        assert!(!format!("{cmd:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn password_requests_reach_the_page_whole() {
+        let line = r#"{"type":"password_request","id":"r1","command":"dmcp call shell x","attempt":2,"at":1.0}"#;
+        match parse_daemon_message(line) {
+            IpcEvent::PasswordRequest(v) => {
+                assert_eq!(v["id"], "r1");
+                assert_eq!(v["attempt"], 2);
+                assert_eq!(v["command"], "dmcp call shell x");
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse_daemon_message(
+            r#"{"type":"password_request_done","id":"r1","outcome":"answered"}"#,
+        ) {
+            IpcEvent::PasswordDone(v) => assert_eq!(v["outcome"], "answered"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -1537,6 +1627,17 @@ mod tests {
         assert_eq!(
             read_line(&mut reader),
             serde_json::json!({"type": "list_clients"})
+        );
+
+        client.answer_password("r1".into(), "hunter2".into());
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "password_response", "id": "r1", "password": "hunter2"})
+        );
+        client.cancel_password("r2".into());
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "password_cancel", "id": "r2"})
         );
 
         write_half
