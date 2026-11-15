@@ -22,6 +22,7 @@ const WIDGETS_DATA_DIR: &str = "widgets";
 const WAKE_CHIME_MARKER_FILE: &str = ".wake_chime_bootstrapped";
 const WAKE_CHIME_RESOURCE: &str = "resources/wake_chime.wav";
 const LOCAL_SETTINGS_FILE: &str = "local_settings.json";
+const TRANSCRIPTS_DIR: &str = "transcripts";
 
 /// Purely local, jarvis-app-only settings -- never round-trip to the daemon.
 /// Distinct from Project-JARVIS's own settings (confirmation mode, wake
@@ -292,6 +293,7 @@ struct ChunkPayload {
     content: String,
     done: bool,
     comment: bool,
+    command: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -332,12 +334,93 @@ struct DaemonShutdownPayload {
     timestamp: f64,
 }
 
+/// `attachments`: ids from this connection's `upload_done`s; with some, the
+/// text may be empty.
 #[tauri::command]
-fn send_message(content: String, state: State<AppState>) {
-    if content.trim().is_empty() {
+fn send_message(content: String, attachments: Option<Vec<String>>, state: State<AppState>) {
+    let attachments = attachments.unwrap_or_default();
+    if content.trim().is_empty() && attachments.is_empty() {
         return;
     }
-    state.ipc.lock().unwrap().send_message(content);
+    state.ipc.lock().unwrap().send_message(content, attachments);
+}
+
+/// A piece of a file the user attached, from the main window only: a widget
+/// window runs third-party code.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn upload_chunk(
+    upload: String,
+    seq: u64,
+    data: String,
+    last: bool,
+    name: Option<String>,
+    size: Option<u64>,
+    window: tauri::Window,
+    state: State<AppState>,
+) {
+    if window.label() == MAIN_WINDOW {
+        state
+            .ipc
+            .lock()
+            .unwrap()
+            .upload_chunk(upload, seq, data, last, name, size);
+    }
+}
+
+/// `/quit` typed in the main window; JARVIS keeps running.
+#[tauri::command]
+fn quit_app(window: tauri::Window, app: AppHandle) {
+    if window.label() == MAIN_WINDOW {
+        app.exit(0);
+    }
+}
+
+/// Where `/export <name>` writes in `dir`: the name's last part only, with
+/// `.md`, so no name leaves the folder.
+fn transcript_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let base = Path::new(name.trim())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Export: invalid filename.".to_string())?;
+    let file = if base.to_lowercase().ends_with(".md") {
+        base.to_string()
+    } else {
+        format!("{base}.md")
+    };
+    Ok(dir.join(file))
+}
+
+/// The chat as Markdown, under JARVIS's `transcripts/` like the TUI's
+/// `/export`; returns the path written.
+#[tauri::command]
+fn export_transcript(
+    name: Option<String>,
+    text: String,
+    window: tauri::Window,
+) -> Result<String, String> {
+    if window.label() != MAIN_WINDOW {
+        return Err("Export: not available in this window.".into());
+    }
+    let dir = Path::new(&ipc::jarvis_data_dir()).join(TRANSCRIPTS_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Export failed (mkdir): {e}"))?;
+    let name = name.unwrap_or_else(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("no-session_{now}")
+    });
+    let path = transcript_path(&dir, &name)?;
+    // A link planted in the folder would carry the write outside it.
+    if path
+        .symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink())
+    {
+        return Err("Export: path must stay under transcripts/.".into());
+    }
+    std::fs::write(&path, text).map_err(|e| format!("Export failed: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -831,6 +914,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             send_message,
+            upload_chunk,
+            quit_app,
+            export_transcript,
             toggle_listening,
             stop_stream,
             send_confirmation_response,
@@ -924,6 +1010,7 @@ fn poll_loop(
                     content,
                     done,
                     comment,
+                    command,
                 } => {
                     let _ = app.emit(
                         "ipc-chunk",
@@ -931,6 +1018,7 @@ fn poll_loop(
                             content,
                             done,
                             comment,
+                            command,
                         },
                     );
                     // After a comment JARVIS carries on working.
@@ -947,6 +1035,12 @@ fn poll_loop(
                 }
                 IpcEvent::UserMessage(said) => {
                     let _ = app.emit("ipc-user-message", said);
+                }
+                IpcEvent::UploadDone(done) => {
+                    let _ = app.emit_to(MAIN_WINDOW, "ipc-upload-done", done);
+                }
+                IpcEvent::UploadError(failed) => {
+                    let _ = app.emit_to(MAIN_WINDOW, "ipc-upload-error", failed);
                 }
                 IpcEvent::Health(sections) => {
                     let _ = app.emit("ipc-health", sections);
@@ -1113,6 +1207,21 @@ mod tests {
 
         assert_eq!(wake_chime_bootstrap_decision(marker, resource), None);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_transcript_name_stays_in_its_folder() {
+        let dir = Path::new("/data/jarvis/transcripts");
+        assert_eq!(transcript_path(dir, "notes"), Ok(dir.join("notes.md")));
+        assert_eq!(transcript_path(dir, " Notes.MD "), Ok(dir.join("Notes.MD")));
+        assert_eq!(
+            transcript_path(dir, "../../etc/passwd"),
+            Ok(dir.join("passwd.md"))
+        );
+        assert_eq!(transcript_path(dir, "/tmp/x"), Ok(dir.join("x.md")));
+        for bad in ["", "   ", ".", "..", "a/.."] {
+            assert!(transcript_path(dir, bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

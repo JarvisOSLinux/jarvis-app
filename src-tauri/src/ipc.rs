@@ -126,12 +126,21 @@ pub enum IpcEvent {
         /// One sentence of what JARVIS is about to do (Project-JARVIS#273),
         /// not the answer: the turn goes on after it.
         comment: bool,
+        /// A slash command's reply (`/sessions`, `/context`): its rows and
+        /// tables are drawn as written, not as markdown.
+        command: bool,
     },
     /// What JARVIS is doing at this moment (Project-JARVIS#267).
     Activity(String),
     /// What the user said on another screen, in the TUI or aloud:
-    /// `{content, at}`. This app draws its own messages when it sends them.
+    /// `{content, at, attachments?}`. This app draws its own messages when it
+    /// sends them.
     UserMessage(serde_json::Value),
+    /// A file this connection uploaded is in (`upload_done`), whole:
+    /// `{upload, attachment: {id, name, kind, mime, size}}`.
+    UploadDone(serde_json::Value),
+    /// That upload failed (`upload_error`), whole: `{upload, message}`.
+    UploadError(serde_json::Value),
     /// A start, update or end of something JARVIS did (Project-JARVIS#271),
     /// passed to the page as the daemon sent it.
     Action(serde_json::Value),
@@ -197,7 +206,20 @@ pub enum IpcEvent {
 
 #[derive(Debug)]
 pub enum IpcCommand {
-    SendMessage(String),
+    /// `attachments`: ids from this connection's `upload_done`s.
+    SendMessage {
+        content: String,
+        attachments: Vec<String>,
+    },
+    /// A piece of a file's bytes, base64; `name` and `size` go with seq 0.
+    UploadChunk {
+        upload: String,
+        seq: u64,
+        data: String,
+        last: bool,
+        name: Option<String>,
+        size: Option<u64>,
+    },
     StartListening,
     StopListening,
     StopStream,
@@ -322,8 +344,30 @@ impl IpcClient {
         }
     }
 
-    pub fn send_message(&self, content: String) {
-        let _ = self.command_tx.send(IpcCommand::SendMessage(content));
+    pub fn send_message(&self, content: String, attachments: Vec<String>) {
+        let _ = self.command_tx.send(IpcCommand::SendMessage {
+            content,
+            attachments,
+        });
+    }
+
+    pub fn upload_chunk(
+        &self,
+        upload: String,
+        seq: u64,
+        data: String,
+        last: bool,
+        name: Option<String>,
+        size: Option<u64>,
+    ) {
+        let _ = self.command_tx.send(IpcCommand::UploadChunk {
+            upload,
+            seq,
+            data,
+            last,
+            name,
+            size,
+        });
     }
 
     pub fn start_listening(&self) {
@@ -589,12 +633,46 @@ fn run_connected(
         }
 
         match command_rx.recv_timeout(COMMAND_POLL) {
-            Ok(IpcCommand::SendMessage(content)) => {
-                let msg = format!(
-                    "{}\n",
-                    serde_json::json!({"type":"message","content":content})
-                );
-                if write_stream.write_all(msg.as_bytes()).is_err() {
+            Ok(IpcCommand::SendMessage {
+                content,
+                attachments,
+            }) => {
+                let mut msg = serde_json::json!({"type":"message","content":content});
+                if !attachments.is_empty() {
+                    msg["attachments"] = attachments.into();
+                }
+                if write_stream
+                    .write_all(format!("{msg}\n").as_bytes())
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Ok(IpcCommand::UploadChunk {
+                upload,
+                seq,
+                data,
+                last,
+                name,
+                size,
+            }) => {
+                let mut msg = serde_json::json!({
+                    "type": "upload_chunk",
+                    "upload": upload,
+                    "seq": seq,
+                    "data": data,
+                    "last": last,
+                });
+                if let Some(name) = name {
+                    msg["name"] = name.into();
+                }
+                if let Some(size) = size {
+                    msg["size"] = size.into();
+                }
+                if write_stream
+                    .write_all(format!("{msg}\n").as_bytes())
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -866,6 +944,10 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
                 .get("comment")
                 .and_then(|c| c.as_bool())
                 .unwrap_or(false),
+            command: value
+                .get("command")
+                .and_then(|c| c.as_bool())
+                .unwrap_or(false),
         },
         Some("activity") => IpcEvent::Activity(
             value
@@ -876,6 +958,8 @@ fn parse_daemon_message(line: &str) -> IpcEvent {
         ),
         Some("action") => IpcEvent::Action(value),
         Some("user_message") => IpcEvent::UserMessage(value),
+        Some("upload_done") => IpcEvent::UploadDone(value),
+        Some("upload_error") => IpcEvent::UploadError(value),
         Some("status") => IpcEvent::Health(
             value
                 .get("sections")
@@ -1206,6 +1290,39 @@ mod new_message_tests {
             }
             other => panic!("{other:?}"),
         }
+        match parse_daemon_message(
+            r#"{"type":"user_message","content":"Read this","at":1.0,"attachments":[{"name":"report.pdf","kind":"pdf","size":2048}]}"#,
+        ) {
+            IpcEvent::UserMessage(value) => {
+                assert_eq!(value["attachments"][0]["name"], "report.pdf");
+                assert_eq!(value["attachments"][0]["kind"], "pdf");
+                assert_eq!(value["attachments"][0]["size"], 2048);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn uploads_are_answered_whole() {
+        match parse_daemon_message(
+            r#"{"type":"upload_done","upload":"u1","attachment":{"id":"ab12","name":"a.png","kind":"image","mime":"image/png","size":10}}"#,
+        ) {
+            IpcEvent::UploadDone(v) => {
+                assert_eq!(v["upload"], "u1");
+                assert_eq!(v["attachment"]["id"], "ab12");
+                assert_eq!(v["attachment"]["kind"], "image");
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse_daemon_message(
+            r#"{"type":"upload_error","upload":"u2","message":"not an image or a PDF"}"#,
+        ) {
+            IpcEvent::UploadError(v) => {
+                assert_eq!(v["upload"], "u2");
+                assert_eq!(v["message"], "not an image or a PDF");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -1233,7 +1350,27 @@ mod new_message_tests {
             other => panic!("{other:?}"),
         }
         match parse_daemon_message(r#"{"type":"response","content":"Done.","done":true}"#) {
-            IpcEvent::ResponseChunk { comment, .. } => assert!(!comment),
+            IpcEvent::ResponseChunk {
+                comment, command, ..
+            } => assert!(!comment && !command),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_command_reply_is_marked() {
+        match parse_daemon_message(
+            r#"{"type":"response","content":"* 1a2b  Chat\n  3c4d  Other","done":true,"command":true}"#,
+        ) {
+            IpcEvent::ResponseChunk {
+                content,
+                command,
+                comment,
+                ..
+            } => {
+                assert!(command && !comment);
+                assert_eq!(content, "* 1a2b  Chat\n  3c4d  Other");
+            }
             other => panic!("{other:?}"),
         }
     }
@@ -1330,6 +1467,82 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    // Attachments: a message carries upload ids only when it has some, and a
+    // file goes up in chunks whose seq 0 alone names it; JARVIS answers once.
+    #[test]
+    fn attachments_round_trip_over_real_socket() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = unique_sock_path("attachments");
+        let _ = std::fs::remove_file(&path);
+        std::env::set_var("JARVIS_SOCKET", &path);
+
+        let listener = UnixListener::bind(&path).unwrap();
+        let client = IpcClient::new();
+
+        let (stream, _) = listener.accept().unwrap();
+        let mut write_half = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+
+        wait_for_event(&client, |e| matches!(e, IpcEvent::Connected));
+        assert_eq!(read_line(&mut reader), hello_message());
+
+        client.send_message("hello".into(), vec![]);
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "message", "content": "hello"})
+        );
+        client.send_message("".into(), vec!["ab12".into(), "cd34".into()]);
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "message", "content": "", "attachments": ["ab12", "cd34"]})
+        );
+
+        client.upload_chunk(
+            "u1".into(),
+            0,
+            "iVBORw0K".into(),
+            false,
+            Some("a.png".into()),
+            Some(40000),
+        );
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({
+                "type": "upload_chunk", "upload": "u1", "seq": 0, "data": "iVBORw0K",
+                "last": false, "name": "a.png", "size": 40000,
+            })
+        );
+        client.upload_chunk("u1".into(), 1, "AAAA".into(), true, None, None);
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "upload_chunk", "upload": "u1", "seq": 1, "data": "AAAA", "last": true})
+        );
+
+        write_half
+            .write_all(
+                b"{\"type\":\"upload_done\",\"upload\":\"u1\",\"attachment\":\
+                   {\"id\":\"ab12\",\"name\":\"a.png\",\"kind\":\"image\",\"mime\":\"image/png\",\"size\":40000}}\n",
+            )
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::UploadDone(_))) {
+            IpcEvent::UploadDone(v) => {
+                assert_eq!(v["upload"], "u1");
+                assert_eq!(v["attachment"]["size"], 40000);
+            }
+            _ => unreachable!(),
+        }
+        write_half
+            .write_all(b"{\"type\":\"upload_error\",\"upload\":\"u2\",\"message\":\"too big\"}\n")
+            .unwrap();
+        match wait_for_event(&client, |e| matches!(e, IpcEvent::UploadError(_))) {
+            IpcEvent::UploadError(v) => assert_eq!(v["message"], "too big"),
+            _ => unreachable!(),
+        }
+
+        std::env::remove_var("JARVIS_SOCKET");
+        let _ = std::fs::remove_file(&path);
     }
 
     // Project-JARVIS#270: the stops, and the ack that says what a stop did.

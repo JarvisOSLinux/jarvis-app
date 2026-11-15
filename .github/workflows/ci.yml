@@ -53,6 +53,12 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+      # The slash commands' pure half (src/commands.js); ubuntu-latest ships node.
+      - name: JS tests
+        run: |
+          for f in src/*.js; do node --check "$f"; done
+          node --test tests/commands.test.js
+
       # bundle.icon files are committed and generated procedurally. If they
       # drift from the script, the icons a release ships stop matching the
       # thing that claims to produce them. Compares pixels rather than file
