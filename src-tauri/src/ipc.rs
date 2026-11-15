@@ -220,6 +220,10 @@ pub enum IpcCommand {
         name: Option<String>,
         size: Option<u64>,
     },
+    /// A file removed before it was sent: JARVIS drops its upload.
+    UploadCancel {
+        upload: String,
+    },
     StartListening,
     StopListening,
     StopStream,
@@ -368,6 +372,10 @@ impl IpcClient {
             name,
             size,
         });
+    }
+
+    pub fn upload_cancel(&self, upload: String) {
+        let _ = self.command_tx.send(IpcCommand::UploadCancel { upload });
     }
 
     pub fn start_listening(&self) {
@@ -669,6 +677,15 @@ fn run_connected(
                 if let Some(size) = size {
                     msg["size"] = size.into();
                 }
+                if write_stream
+                    .write_all(format!("{msg}\n").as_bytes())
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Ok(IpcCommand::UploadCancel { upload }) => {
+                let msg = serde_json::json!({"type": "upload_cancel", "upload": upload});
                 if write_stream
                     .write_all(format!("{msg}\n").as_bytes())
                     .is_err()
@@ -1518,6 +1535,11 @@ mod tests {
         assert_eq!(
             read_line(&mut reader),
             serde_json::json!({"type": "upload_chunk", "upload": "u1", "seq": 1, "data": "AAAA", "last": true})
+        );
+        client.upload_cancel("u2".into());
+        assert_eq!(
+            read_line(&mut reader),
+            serde_json::json!({"type": "upload_cancel", "upload": "u2"})
         );
 
         write_half

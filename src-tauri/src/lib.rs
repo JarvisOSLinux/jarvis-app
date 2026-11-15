@@ -335,10 +335,20 @@ struct DaemonShutdownPayload {
 }
 
 /// `attachments`: ids from this connection's `upload_done`s; with some, the
-/// text may be empty.
+/// text may be empty. From the main window only: every window shares the one
+/// connection, so a widget could otherwise send the user's files as its own.
 #[tauri::command]
-fn send_message(content: String, attachments: Option<Vec<String>>, state: State<AppState>) {
-    let attachments = attachments.unwrap_or_default();
+fn send_message(
+    content: String,
+    attachments: Option<Vec<String>>,
+    window: tauri::Window,
+    state: State<AppState>,
+) {
+    let attachments = if window.label() == MAIN_WINDOW {
+        attachments.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     if content.trim().is_empty() && attachments.is_empty() {
         return;
     }
@@ -365,6 +375,15 @@ fn upload_chunk(
             .lock()
             .unwrap()
             .upload_chunk(upload, seq, data, last, name, size);
+    }
+}
+
+/// A file the user removed before sending, from the main window only: JARVIS
+/// drops its upload, done or not.
+#[tauri::command]
+fn upload_cancel(upload: String, window: tauri::Window, state: State<AppState>) {
+    if window.label() == MAIN_WINDOW {
+        state.ipc.lock().unwrap().upload_cancel(upload);
     }
 }
 
@@ -915,6 +934,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             send_message,
             upload_chunk,
+            upload_cancel,
             quit_app,
             export_transcript,
             toggle_listening,

@@ -38,6 +38,8 @@
             type: 'upload_chunk', upload: a.upload, seq: a.seq, data: a.data, last: a.last,
             name: a.name, size: a.size,
         }),
+        // A file removed before it was sent; JARVIS drops its upload.
+        upload_cancel:              (a) => ({ type: 'upload_cancel', upload: a.upload }),
         stop_stream:                ()  => ({ type: 'stop_stream' }),
         stop:                       ()  => ({ type: 'stop' }),
         stop_all:                   ()  => ({ type: 'stop_all' }),

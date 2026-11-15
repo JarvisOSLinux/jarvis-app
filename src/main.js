@@ -177,8 +177,9 @@ function setConnected(connected) {
 
 /// Send takes text or a finished attachment, and waits for every upload.
 function refreshSendBtn() {
-    sendBtn.disabled = !isConnected || uploading()
-        || (messageInput.value.trim() === '' && !readyAttachments().length);
+    const text = messageInput.value.trim();
+    sendBtn.disabled = !isConnected || (text === '' && !readyAttachments().length)
+        || (uploading() && !lineCommand(parseCommandLine(text)));
 }
 
 /// A line above the input for what went wrong; a click dismisses it.
@@ -514,8 +515,9 @@ function clearChat() {
     emptyState.style.display = '';
 }
 
+/// `session` null: the chat shown was deleted, and JARVIS is in no session.
 function restoreSessionMessages(session, msgs) {
-    currentSessionId = session.id;
+    currentSessionId = session ? session.id : null;
     clearChat();
     actionBlocks.clear();
     for (const m of msgs) {
@@ -1661,6 +1663,12 @@ function canApprove() {
     return hasBodyClass('can-approve');
 }
 
+/// The catalog command a parsed line names, or undefined: a message, or an
+/// unknown /x that goes to JARVIS as one.
+function lineCommand(line) {
+    return line ? JARVIS_COMMANDS.find((c) => c.name === line.name) : undefined;
+}
+
 function offeredCommands() {
     return commandsFor(JARVIS_COMMANDS, hasBodyClass);
 }
@@ -1920,13 +1928,11 @@ function setupsLine(work) {
 
 function attachCommand(args) {
     const arg = args.toLowerCase();
-    if (!canApprove()) {
-        addCommandReply('Attaching files is not available to a guest.');
-    } else if (!arg) {
+    if (!arg) {
         attachInput.click();
     } else if (arg === 'clear') {
         const n = attachments.length;
-        dropAttachments();
+        dropAttachments(true);
         addCommandReply(n ? `Dropped ${n} attachment${n === 1 ? '' : 's'}.` : 'No attachments to drop.');
     } else {
         addCommandReply('Usage: /attach [clear]');
@@ -2036,7 +2042,7 @@ function buildAttachmentChip(item) {
     remove.title = `Remove ${item.name}`;
     remove.setAttribute('aria-label', remove.title);
     remove.append(icon('x'));
-    remove.addEventListener('click', () => removeAttachment(item));
+    remove.addEventListener('click', () => cancelAttachment(item));
     item.bar = el('span', 'attachment-progress');
     item.bar.style.width = '0%';
     chip.append(el('span', 'attachment-name', item.name), el('span', 'attachment-size', formatSize(item.size)),
@@ -2081,13 +2087,12 @@ function addFiles(files) {
     refreshSendBtn();
 }
 
-// shortcut: a file removed mid-upload stops sending, and JARVIS holds its part
-// until this connection closes; the protocol has no cancel.
+// A file removed mid-upload stops sending; its upload_cancel frees it on JARVIS.
 async function uploadFile(item) {
     try {
         for (let seq = 0, offset = 0; offset < item.size; seq++, offset += ATTACH_CHUNK) {
-            if (!attachments.includes(item) || !isConnected) return;
             const bytes = new Uint8Array(await item.file.slice(offset, offset + ATTACH_CHUNK).arrayBuffer());
+            if (!attachments.includes(item) || !isConnected) return;
             const chunk = { upload: item.upload, seq, data: toBase64(bytes), last: offset + ATTACH_CHUNK >= item.size };
             if (seq === 0) Object.assign(chunk, { name: item.name, size: item.size });
             await invoke('upload_chunk', chunk);
@@ -2095,7 +2100,7 @@ async function uploadFile(item) {
         }
     } catch (e) {
         if (!attachments.includes(item)) return;
-        removeAttachment(item);
+        cancelAttachment(item);
         showNotice(`${item.name} could not be read: ${e}`);
     }
 }
@@ -2127,8 +2132,15 @@ function removeAttachment(item) {
     refreshSendBtn();
 }
 
-function dropAttachments() {
-    for (const item of [...attachments]) removeAttachment(item);
+/// The user took the file back: JARVIS drops its upload, finished or not.
+function cancelAttachment(item) {
+    if (isConnected) invoke('upload_cancel', { upload: item.upload });
+    removeAttachment(item);
+}
+
+/// `cancel`: the user dropped them; without, their connection is gone.
+function dropAttachments(cancel = false) {
+    for (const item of [...attachments]) (cancel ? cancelAttachment : removeAttachment)(item);
 }
 
 // Files dragged onto the window. The page takes the drop even when it does
@@ -2147,17 +2159,27 @@ function showDropOverlay(shown) {
 async function sendMessage() {
     const text = messageInput.value.trim();
     const ready = readyAttachments();
-    if (!isConnected || uploading() || (!text && !ready.length)) return;
+    if (!isConnected || (!text && !ready.length)) return;
+    const line = parseCommandLine(text);
+    const command = lineCommand(line);
+    // A command takes no files, so it need not wait for an upload; they wait
+    // for the next message.
+    if (!command && uploading()) return;
     messageInput.value = '';
     closeCommandPopup();
     refreshSendBtn();
-    const line = parseCommandLine(text);
-    const command = line && JARVIS_COMMANDS.find((c) => c.name === line.name);
-    // A command takes no files; they wait for the next message.
     const files = command ? [] : ready;
     // Every line shows, as in the TUI; a typed API key does not.
     addUserMessage(line ? maskKeys(text) : text, null, files.map((a) => a.meta));
-    if (command && command.where === 'app' && (await COMMAND_HANDLERS[command.name](line.args)) !== false) return;
+    if (command && command.where === 'app') {
+        // Typed though not offered; the gateway still checks. /quit answers a
+        // browser itself.
+        if (command.needs !== 'desktop' && !commandsFor([command], hasBodyClass).length) {
+            addCommandReply(`${command.name} is not available to a ${role}.`);
+            return;
+        }
+        if ((await COMMAND_HANDLERS[command.name](line.args)) !== false) return;
+    }
     if (line && hasKeyFlag(text)) {
         addCommandReply('Not sent: a line with --key stays on this screen, so the key never reaches the model.');
         return;
@@ -2331,7 +2353,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     await listen('ipc-confirmation-list', (e) => renderPermissionList(e.payload));
     await listen('ipc-session-list', (e) => {
         renderSessionList(e.payload);
-        // A guest may not switch sessions; it follows the host's current one.
+        // In no session (just connected, or the current one was deleted): go to
+        // the newest. A guest may not switch sessions; it follows the host's.
         if (currentSessionId === null && e.payload.length > 0 && role !== 'guest') {
             switchToSession(e.payload[0].id);
         }

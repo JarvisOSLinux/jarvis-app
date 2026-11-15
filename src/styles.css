@@ -1512,6 +1512,10 @@ body:not(.can-approve) #attach-btn { display: none; }
     padding: 8px 16px 0;
     background: var(--surface);
     flex-shrink: 0;
+    /* Ten chips on a phone with its keyboard open would push the input off
+       the screen. */
+    max-height: 30vh;
+    overflow-y: auto;
 }
 
 .attachment-chip {

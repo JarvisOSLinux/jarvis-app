@@ -70,7 +70,8 @@ first line or the daemon rejects the peer (`connect_tcp_with_token` in
 platform, not just compiled for Windows).
 
 **Client -> Daemon**: `message` (`attachments`: upload ids, when it has
-                      some), `upload_chunk`, `start_listening`, `stop_listening`,
+                      some), `upload_chunk`, `upload_cancel`,
+                      `start_listening`, `stop_listening`,
                       `stop_stream`, `confirmation_response`, `ping`,
                       `list_sessions`, `create_session`, `switch_session`,
                       `rename_session`, `delete_session`,
@@ -93,7 +94,8 @@ platform, not just compiled for Windows).
                       reply, drawn as written), `upload_done`, `upload_error`,
                       `wake_word_detected`,
                       `confirmation_request`, `error`, `session_list`,
-                      `session_switched`, `session_error`,
+                      `session_switched` (`session: null` once the
+                      current session is deleted), `session_error`,
                       `config_updated`, `config_error`, `settings`,
                       `provider_list`, `provider_error`, `client_list`,
                       `DAEMON_SHUTDOWN`, and the Project-JARVIS#267 additions:
@@ -180,10 +182,22 @@ as base64 `upload_chunk {upload, seq, data, last, name?, size?}` pieces of
 32 KiB, one file at a time, and JARVIS answers once with `upload_done
 {upload, attachment}` or `upload_error {upload, message}`. The ids go with the
 next message (`send_message {content, attachments}`) and belong to the
-connection: a dropped one drops them. No message carries a host path. Guests
-(`body:not(.can-approve)`) do not attach. `upload_chunk`, `quit_app` and
-`export_transcript` answer the main window only, and the upload events go to
-it alone.
+connection: a dropped one drops them. A chip removed, `/attach clear` or a
+file that could not be read sends `upload_cancel {upload}` (no reply), and
+JARVIS drops that upload, finished or not; it allows 4 uploads at once and 20
+waiting (uploading or finished, unsent) per connection. No message carries a
+host path. Guests (`body:not(.can-approve)`) do not attach. `upload_chunk`,
+`upload_cancel`, `quit_app` and `export_transcript` act for the main window
+only, and `send_message` takes `attachments` from it alone: every window
+shares the one connection. `emit_to(MAIN_WINDOW, …)` does not keep the
+upload events from a widget's `listen` (its target is any window), so an id
+alone is not enough; that check is what stops a widget sending the user's
+files.
+
+A typed app command (`where: 'app'`) whose `needs` the page lacks
+(`can-approve`, `can-manage`) is answered on the page ("/status is not
+available to a guest.") instead of opening a panel the gateway would refuse.
+Commands run while a file uploads; only a message waits for it.
 
 ### Permission requests pop up
 
@@ -389,7 +403,7 @@ and appearance-override controls.
 | `stop_stream`                   | `ipc-state` (string)     |
 | `send_confirmation_response`    | `ipc-chunk` `{content, done, comment, command}` |
 | `upload_chunk(upload, seq, data, last, name?, size?)` | `ipc-upload-done` `{upload, attachment: {id, name, kind, mime, size}}` |
-|                                 | `ipc-upload-error` `{upload, message}` |
+| `upload_cancel(upload)` (main window only) | `ipc-upload-error` `{upload, message}` |
 | `quit_app` / `export_transcript(name?, text)` (local, main window only) | `ipc-user-message` `{content, at, attachments?}` |
 | `list_confirmations`            | `ipc-wake`               |
 | `approve_confirmation`          | `ipc-confirm` `{id, tool_names}` |
