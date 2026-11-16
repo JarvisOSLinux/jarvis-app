@@ -601,13 +601,14 @@ fn add_provider(
     url: Option<String>,
     api_key: Option<String>,
     temperature: Option<f64>,
+    vision: bool,
     state: State<AppState>,
 ) {
     state
         .ipc
         .lock()
         .unwrap()
-        .add_provider(ptype, model, name, url, api_key, temperature);
+        .add_provider(ptype, model, name, url, api_key, temperature, vision);
 }
 
 #[tauri::command]

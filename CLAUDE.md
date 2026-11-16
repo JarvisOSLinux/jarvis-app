@@ -283,6 +283,12 @@ A centered modal (`#settings-btn` in the header) with two tabs:
   `providers.json` live). A phone is told whether a provider has a key
   (`api_key_set`), never the key; moving a provider to another host without
   typing a key removes the stored one (Project-JARVIS `edit_provider`).
+  The form's "Vision (can look at images)" switch is the provider's
+  `vision` flag; `analyze_image` sends images only to such a provider:
+  `add_provider` carries it as `vision` (a bool, always sent), an edit puts it
+  in `fields`, and the list shows "vision" after the model. `/providers add`
+  and `edit` take `--vision <true|false>`, and a bare `--vision` is on, as
+  `jarvis providers add` reads it (`takeVisionFlag` in `commands.js`).
 
 `ConfigUpdated`/`ConfigError` (`ipc.rs`) already existed for the wake-chime
 bootstrap above, but were previously consumed only internally by the poll
