@@ -7,7 +7,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
     JARVIS_COMMANDS, commandsFor, isCommandPrefix, matchCommands, filterCommands,
-    CommandCompleter, parseCommandLine, parseFlags, hasKeyFlag, maskKeys, searchCommands,
+    CommandCompleter, parseCommandLine, parseFlags, takeVisionFlag, hasKeyFlag, maskKeys,
+    searchCommands,
 } = require('../src/commands.js');
 
 const NAMES = JARVIS_COMMANDS.map((c) => c.name);
@@ -111,6 +112,20 @@ test('flags read as parse_flags reads them', () => {
     assert.deepEqual(parseFlags(['--type', 'api', '--model', 'm', 'x', '--key']),
         { type: 'api', model: 'm' });
     assert.deepEqual(parseFlags([]), {});
+});
+
+test('--vision reads as `jarvis providers add` reads it: bare is on', () => {
+    const tokens = (line) => line.split(' ');
+    assert.deepEqual(takeVisionFlag(tokens('--type api --model m --vision')),
+        { rest: tokens('--type api --model m'), vision: true });
+    assert.deepEqual(takeVisionFlag(tokens('--vision --model m')),
+        { rest: tokens('--model m'), vision: true });
+    assert.deepEqual(takeVisionFlag(tokens('--model m --vision false')),
+        { rest: tokens('--model m'), vision: false });
+    assert.deepEqual(takeVisionFlag(tokens('--vision TRUE --model m')),
+        { rest: tokens('--model m'), vision: true });
+    assert.deepEqual(takeVisionFlag(tokens('--vision off')), { rest: [], vision: false });
+    assert.deepEqual(takeVisionFlag(tokens('--model m')), { rest: tokens('--model m'), vision: undefined });
 });
 
 test('a --key value never shows', () => {

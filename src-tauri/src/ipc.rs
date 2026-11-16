@@ -283,6 +283,7 @@ pub enum IpcCommand {
         url: Option<String>,
         api_key: Option<String>,
         temperature: Option<f64>,
+        vision: bool,
     },
     EditProvider {
         name: String,
@@ -459,6 +460,7 @@ impl IpcClient {
         url: Option<String>,
         api_key: Option<String>,
         temperature: Option<f64>,
+        vision: bool,
     ) {
         let _ = self.command_tx.send(IpcCommand::AddProvider {
             ptype,
@@ -467,6 +469,7 @@ impl IpcClient {
             url,
             api_key,
             temperature,
+            vision,
         });
     }
 
@@ -798,6 +801,7 @@ fn run_connected(
                 url,
                 api_key,
                 temperature,
+                vision,
             }) => {
                 let msg = format!(
                     "{}\n",
@@ -809,6 +813,7 @@ fn run_connected(
                         "url": url,
                         "api_key": api_key,
                         "temperature": temperature,
+                        "vision": vision,
                     })
                 );
                 let _ = write_stream.write_all(msg.as_bytes());
@@ -1850,6 +1855,7 @@ mod tests {
             None,
             None,
             None,
+            true,
         );
         assert_eq!(
             read_line(&mut reader),
@@ -1861,6 +1867,7 @@ mod tests {
                 "url": null,
                 "api_key": null,
                 "temperature": null,
+                "vision": true,
             })
         );
 
